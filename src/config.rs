@@ -10,6 +10,41 @@ pub struct TmuxWindow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Todo {
+    pub description: String,
+    #[serde(default)]
+    pub status: TodoStatus,
+    pub worktree: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TodoStatus {
+    Pending,
+    Done,
+}
+
+impl Default for TodoStatus {
+    fn default() -> Self {
+        TodoStatus::Pending
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub name: String,
+    #[serde(default = "default_worktree_naming")]
+    pub worktree_naming: String,
+    #[serde(default)]
+    pub todos: Vec<Todo>,
+    pub windows: Vec<TmuxWindow>,
+}
+
+fn default_worktree_naming() -> String {
+    "Add Feature".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_windows")]
     pub windows: Vec<TmuxWindow>,
@@ -40,6 +75,105 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             windows: default_windows(),
+        }
+    }
+}
+
+impl AppConfig {
+    /// Load config from git repository root
+    pub fn load() -> Result<Self> {
+        let config_path = Self::config_path()?;
+
+        if config_path.exists() {
+            let contents = fs::read_to_string(&config_path)
+                .context("Failed to read lfg-config.yaml")?;
+
+            // Try to parse the config
+            match serde_yaml::from_str::<Self>(&contents) {
+                Ok(config) => Ok(config),
+                Err(e) => {
+                    eprintln!("Warning: Failed to parse lfg-config.yaml: {}", e);
+                    eprintln!("Creating backup and generating new default config...");
+
+                    // Backup the old config
+                    let backup_path = config_path.with_extension("yaml.backup");
+                    if let Err(e) = fs::copy(&config_path, &backup_path) {
+                        eprintln!("Warning: Failed to create backup: {}", e);
+                    } else {
+                        eprintln!("Backed up old config to: {}", backup_path.display());
+                    }
+
+                    // Create and save default config
+                    let config = Self::default();
+                    config.save()?;
+                    Ok(config)
+                }
+            }
+        } else {
+            // Create default config
+            let config = Self::default();
+            config.save()?;
+            Ok(config)
+        }
+    }
+
+    /// Save config to git repository root
+    pub fn save(&self) -> Result<()> {
+        let config_path = Self::config_path()?;
+
+        let contents = serde_yaml::to_string(self)?;
+        fs::write(&config_path, contents).context("Failed to write lfg-config.yaml")?;
+
+        Ok(())
+    }
+
+    /// Get the config file path (in git repo root)
+    pub fn config_path() -> Result<PathBuf> {
+        let git_root = crate::git::get_git_root()?;
+        Ok(git_root.join("lfg-config.yaml"))
+    }
+}
+
+impl AppConfig {
+    /// Mark a todo as done by worktree name
+    pub fn mark_todo_done(&mut self, worktree_name: &str) {
+        if let Some(todo) = self.todos.iter_mut().find(|t| {
+            t.worktree.as_ref().map(|w| w == worktree_name).unwrap_or(false)
+        }) {
+            todo.status = TodoStatus::Done;
+        }
+    }
+
+    /// Create a new todo linked to a worktree
+    pub fn add_todo(&mut self, description: String, worktree_name: String) {
+        self.todos.push(Todo {
+            description,
+            status: TodoStatus::Pending,
+            worktree: Some(worktree_name),
+        });
+    }
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            name: "default".to_string(),
+            worktree_naming: "Add feature".to_string(),
+            todos: vec![],
+            windows: vec![
+                TmuxWindow {
+                    name: "editor".to_string(),
+                    command: None,
+                },
+                TmuxWindow {
+                    name: "server".to_string(),
+                    command: Some("omnara --dangerously-skip-permissions".to_string()),
+                },
+                TmuxWindow {
+                    name: "shell".to_string(),
+                    command: None,
+                },
+            ],
         }
     }
 }

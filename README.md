@@ -5,10 +5,14 @@ A Rust TUI (Terminal User Interface) application for managing git worktrees with
 ## Features
 
 - Interactive TUI for browsing and selecting git worktrees
+- **Per-repository configuration with YAML**
+- **Automatic tmux installation check**
+- **Customizable worktree naming per repository**
+- **Repository-specific todo lists displayed in the UI**
 - Create new worktrees directly from the interface
 - Direct jump to worktrees via command-line argument
 - Automatic tmux session creation with configurable windows
-- Persistent configuration for tmux window setup
+- Repository-specific configuration stored in `lfg-config.yaml`
 
 ## Installation
 
@@ -36,7 +40,8 @@ lfg
 **Navigation:**
 - `↑`/`↓` or `j`/`k`: Navigate through worktrees
 - `Enter`: Select worktree and start tmux session
-- `n` or `c`: Create new worktree
+- `n` or `c`: Create new worktree (creates linked todo)
+- `d`: Close worktree and mark todo as done
 - `r`: Refresh worktree list
 - `q` or `Esc`: Quit
 
@@ -50,62 +55,93 @@ lfg <worktree-name>
 
 ## Configuration
 
-Configuration is stored at `~/.config/lfg/config.toml`. On first run, a default configuration will be created.
+LFG uses a repository-specific configuration file called `lfg-config.yaml` stored in the **root of your git repository**.
 
-### Default Configuration
+When you run `lfg` for the first time in a repository, it will automatically create a default `lfg-config.yaml` with sensible defaults.
 
-```toml
-[[windows]]
-name = "rails"
-command = "bin/rails s"
+### Configuration File Location
 
-[[windows]]
-name = "tailwind"
-command = "bin/rails tailwind:watch"
+The config file is always located at: `<git-repo-root>/lfg-config.yaml`
 
-[[windows]]
-name = "omnara"
-command = "omnara --dangerously-skip-permissions"
+### Configuration Options
 
-[[windows]]
-name = "shell"
+Each repository's config can specify:
+- **`name`**: Repository/project name
+- **`worktree_naming`**: Default name template for new worktrees (pre-filled when creating worktrees)
+- **`todos`**: List of tasks linked to worktrees with status tracking
+  - `description`: The task description
+  - `status`: `pending` or `done`
+  - `worktree`: The linked worktree name (optional)
+- **`windows`**: Tmux windows and commands to run in each window
+
+### Example Configuration
+
+See `lfg-config.example.yaml` for a complete example:
+
+```yaml
+name: myapp
+worktree_naming: Add feature
+todos:
+  - description: Implement login feature
+    status: done
+    worktree: myapp-login
+  - description: Add user profile page
+    status: pending
+    worktree: myapp-profile
+windows:
+  - name: editor
+    command: null
+  - name: server
+    command: omnara --dangerously-skip-permissions
+  - name: shell
+    command: null
 ```
 
-### Customizing Windows
+### Customizing Your Config
 
-Edit the config file to customize the tmux windows that get created:
+1. Run `lfg` in your repository (creates default config if it doesn't exist)
+2. Edit `lfg-config.yaml` in your repo root
+3. Customize:
+   - `worktree_naming`: The default name when creating new worktrees
+   - `todos`: Your workflow checklist items (can be empty initially)
+   - `windows`: Tmux windows with project-specific commands
+4. Commit the config to your repository so your team can use the same setup!
 
-```toml
-[[windows]]
-name = "editor"
-command = "nvim"
+### Worktree & Todo Workflow
 
-[[windows]]
-name = "server"
-command = "npm run dev"
+LFG automatically links worktrees with todos for better task tracking:
 
-[[windows]]
-name = "logs"
-command = "tail -f logs/development.log"
+1. **Creating a worktree**: Press `n` or `c` to create a new worktree
+   - The worktree name is pre-filled with your `worktree_naming` template
+   - A new todo is automatically created and linked to the worktree
+   - The todo starts with `pending` status
 
-[[windows]]
-name = "shell"
-# No command = just opens a shell
-```
+2. **Working on a worktree**: Press `Enter` to launch your tmux session
+   - All configured windows are created with your custom commands
+   - The todo remains in `pending` status while you work
+
+3. **Closing a worktree**: Press `d` to close and clean up
+   - The worktree is deleted from disk
+   - The linked todo is marked as `done` automatically
+   - The config is saved with the updated todo status
+
+This workflow helps you track what you're working on and maintain a history of completed work!
 
 ## How It Works
 
-1. **Worktree Discovery**: LFG scans your git worktrees using `git worktree list`
-2. **Selection**: Choose a worktree from the TUI or specify it via command line
-3. **Tmux Session**: Creates a tmux session named after the worktree
-4. **Window Setup**: Creates configured tmux windows in the worktree directory
-5. **Attachment**: Attaches you to the tmux session
+1. **Tmux Check**: LFG verifies that tmux is installed before proceeding
+2. **Config Loading**: Loads `lfg-config.yaml` from your git repository root (creates default if missing)
+3. **Worktree Discovery**: Scans your git worktrees using `git worktree list`
+4. **Selection**: Choose a worktree from the TUI or specify it via command line
+5. **Tmux Session**: Creates a tmux session named after the worktree
+6. **Window Setup**: Creates configured tmux windows in the worktree directory with repository-specific commands
+7. **Attachment**: Attaches you to the tmux session
 
 ## Requirements
 
 - Rust 1.70+
 - Git with worktree support
-- tmux
+- tmux (automatically checked at runtime)
 
 ## Comparison with Bash Function
 

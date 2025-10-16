@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::config::Config;
+use crate::config::{AppConfig, Config};
 
 /// Check if tmux is available
 pub fn is_available() -> bool {
@@ -13,6 +13,14 @@ pub fn is_available() -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Check if tmux is installed and exit with error if not
+pub fn ensure_installed() -> Result<()> {
+    if !is_available() {
+        return Err(anyhow!("tmux is not installed or not in PATH. Please install tmux first."));
+    }
+    Ok(())
 }
 
 /// Check if a tmux session exists
@@ -51,11 +59,81 @@ fn set_window_title(session_name: &str, window_index: usize, title: &str) -> Res
     Ok(())
 }
 
-/// Start a new tmux session with configured windows
-pub fn start_session(session_name: &str, worktree_path: &Path) -> Result<()> {
-    if !is_available() {
-        return Err(anyhow!("tmux is not installed or not in PATH"));
+/// Start a new tmux session with app-specific configuration
+pub fn start_session_with_app(session_name: &str, worktree_path: &Path, app_config: &AppConfig) -> Result<()> {
+    ensure_installed()?;
+
+    // Check if session already exists
+    if session_exists(session_name)? {
+        // Attach to existing session
+        attach_session(session_name)?;
+        return Ok(());
     }
+
+    let path_str = worktree_path
+        .to_str()
+        .ok_or_else(|| anyhow!("Invalid worktree path"))?;
+
+    // Create first window with command or empty
+    if let Some(first_window) = app_config.windows.first() {
+        let mut cmd = Command::new("tmux");
+        cmd.args(["new-session", "-d", "-s", session_name, "-c", path_str]);
+        cmd.args(["-n", &first_window.name]);
+
+        if let Some(command) = &first_window.command {
+            cmd.arg(command);
+        }
+
+        let output = cmd.output().context("Failed to create tmux session")?;
+
+        if !output.status.success() {
+            return Err(anyhow!(
+                "Failed to create tmux session: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        // Set the terminal title for the first window
+        if let Err(e) = set_window_title(session_name, 0, &first_window.name) {
+            eprintln!("Warning: Failed to set title for window {}: {}", first_window.name, e);
+        }
+
+        // Create remaining windows
+        for (index, window) in app_config.windows.iter().skip(1).enumerate() {
+            let mut cmd = Command::new("tmux");
+            cmd.args(["new-window", "-t", session_name, "-c", path_str]);
+            cmd.args(["-n", &window.name]);
+
+            if let Some(command) = &window.command {
+                cmd.arg(command);
+            }
+
+            let output = cmd.output().context("Failed to create tmux window")?;
+
+            if !output.status.success() {
+                eprintln!(
+                    "Warning: Failed to create window {}: {}",
+                    window.name,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            } else {
+                // Set the terminal title for this window (index + 1 because we skipped the first)
+                if let Err(e) = set_window_title(session_name, index + 1, &window.name) {
+                    eprintln!("Warning: Failed to set title for window {}: {}", window.name, e);
+                }
+            }
+        }
+    }
+
+    // Attach to the session
+    attach_session(session_name)?;
+
+    Ok(())
+}
+
+/// Start a new tmux session with configured windows (uses global config for backward compatibility)
+pub fn start_session(session_name: &str, worktree_path: &Path) -> Result<()> {
+    ensure_installed()?;
 
     // Check if session already exists
     if session_exists(session_name)? {

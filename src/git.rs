@@ -6,6 +6,7 @@ use std::process::Command;
 pub struct Worktree {
     pub name: String,
     pub path: PathBuf,
+    #[allow(dead_code)]
     pub branch: String,
 }
 
@@ -68,6 +69,21 @@ fn parse_worktrees(output: &str) -> Result<Vec<Worktree>> {
     Ok(worktrees)
 }
 
+/// Get the root directory of the git repository
+pub fn get_git_root() -> Result<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .context("Failed to get git root")?;
+
+    if !output.status.success() {
+        return Err(anyhow!("Not in a git repository"));
+    }
+
+    let git_root = PathBuf::from(String::from_utf8(output.stdout)?.trim());
+    Ok(git_root)
+}
+
 /// Find a worktree by name
 pub fn find_worktree(name: &str) -> Result<Worktree> {
     let worktrees = list_worktrees()?;
@@ -79,17 +95,7 @@ pub fn find_worktree(name: &str) -> Result<Worktree> {
 
 /// Create a new worktree
 pub fn create_worktree(name: &str, branch: Option<&str>) -> Result<PathBuf> {
-    // Get the root of the git repository
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .context("Failed to get git root")?;
-
-    if !output.status.success() {
-        return Err(anyhow!("Not in a git repository"));
-    }
-
-    let git_root = PathBuf::from(String::from_utf8(output.stdout)?.trim());
+    let git_root = get_git_root()?;
     let worktree_path = git_root.parent().unwrap_or(&git_root).join(name);
 
     let mut cmd = Command::new("git");
