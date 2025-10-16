@@ -32,11 +32,18 @@ struct App {
 }
 
 impl App {
-    fn new() -> Result<Self> {
+    fn new(initial_worktree: Option<String>) -> Result<Self> {
         let worktrees = git::list_worktrees().context("Failed to list worktrees")?;
         let mut list_state = ListState::default();
+
+        // Select initial worktree (current worktree if provided, otherwise first one)
         if !worktrees.is_empty() {
-            list_state.select(Some(0));
+            let initial_index = if let Some(name) = initial_worktree {
+                worktrees.iter().position(|wt| wt.name == name).unwrap_or(0)
+            } else {
+                0
+            };
+            list_state.select(Some(initial_index));
         }
 
         Ok(Self {
@@ -159,8 +166,11 @@ pub fn run() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    // Detect current worktree to highlight it
+    let current_worktree = git::get_current_worktree().ok().flatten();
+
     // Create app and run
-    let mut app = App::new()?;
+    let mut app = App::new(current_worktree)?;
     let res = run_app(&mut terminal, &mut app);
 
     // Restore terminal

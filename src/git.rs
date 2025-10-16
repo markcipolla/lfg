@@ -113,6 +113,21 @@ pub fn create_worktree(name: &str, branch: Option<&str>) -> Result<PathBuf> {
     Ok(worktree_path)
 }
 
+/// Get the current worktree if the current directory is inside one
+pub fn get_current_worktree() -> Result<Option<String>> {
+    let current_dir = std::env::current_dir().context("Failed to get current directory")?;
+    let worktrees = list_worktrees()?;
+
+    // Find if current directory is within any worktree
+    for worktree in worktrees {
+        if current_dir.starts_with(&worktree.path) {
+            return Ok(Some(worktree.name));
+        }
+    }
+
+    Ok(None)
+}
+
 /// Jump to a worktree and start tmux session
 pub fn jump_to_worktree(name: &str) -> Result<()> {
     let worktree = find_worktree(name)?;
