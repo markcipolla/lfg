@@ -27,6 +27,30 @@ pub fn session_exists(name: &str) -> Result<bool> {
     Ok(output.success())
 }
 
+/// Set the terminal window title for a tmux window
+fn set_window_title(session_name: &str, window_index: usize, title: &str) -> Result<()> {
+    // Enable setting terminal titles for this session
+    Command::new("tmux")
+        .args(["set-option", "-t", session_name, "set-titles", "on"])
+        .output()
+        .context("Failed to enable terminal titles")?;
+
+    // Set the title string for the specific window
+    let target = format!("{}:{}", session_name, window_index);
+    Command::new("tmux")
+        .args([
+            "set-option",
+            "-t",
+            &target,
+            "set-titles-string",
+            title,
+        ])
+        .output()
+        .context("Failed to set window title")?;
+
+    Ok(())
+}
+
 /// Start a new tmux session with configured windows
 pub fn start_session(session_name: &str, worktree_path: &Path) -> Result<()> {
     if !is_available() {
@@ -64,8 +88,11 @@ pub fn start_session(session_name: &str, worktree_path: &Path) -> Result<()> {
             ));
         }
 
+        // Set the terminal title for the first window
+        set_window_title(session_name, 0, &first_window.name)?;
+
         // Create remaining windows
-        for window in config.windows.iter().skip(1) {
+        for (index, window) in config.windows.iter().skip(1).enumerate() {
             let mut cmd = Command::new("tmux");
             cmd.args(["new-window", "-t", session_name, "-c", path_str]);
             cmd.args(["-n", &window.name]);
@@ -82,6 +109,11 @@ pub fn start_session(session_name: &str, worktree_path: &Path) -> Result<()> {
                     window.name,
                     String::from_utf8_lossy(&output.stderr)
                 );
+            } else {
+                // Set the terminal title for this window (index + 1 because we skipped the first)
+                if let Err(e) = set_window_title(session_name, index + 1, &window.name) {
+                    eprintln!("Warning: Failed to set title for window {}: {}", window.name, e);
+                }
             }
         }
     }
