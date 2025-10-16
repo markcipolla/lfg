@@ -31,10 +31,29 @@ impl Default for TodoStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageBackend {
+    Local,
+    Github {
+        owner: String,
+        repo: String,
+        project_number: u32,
+    },
+}
+
+impl Default for StorageBackend {
+    fn default() -> Self {
+        StorageBackend::Local
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub name: String,
     #[serde(default = "default_worktree_naming")]
     pub worktree_naming: String,
+    #[serde(default)]
+    pub storage_backend: StorageBackend,
     #[serde(default)]
     pub todos: Vec<Todo>,
     pub windows: Vec<TmuxWindow>,
@@ -90,7 +109,22 @@ impl AppConfig {
 
             // Try to parse the config
             match serde_yaml::from_str::<Self>(&contents) {
-                Ok(config) => Ok(config),
+                Ok(mut config) => {
+                    // Sync from GitHub if using GitHub backend
+                    if let StorageBackend::Github { ref owner, ref repo, project_number } = config.storage_backend {
+                        let client = crate::github::GitHubClient::new(
+                            owner.clone(),
+                            repo.clone(),
+                            project_number,
+                        );
+                        if let Ok(github_todos) = client.sync_from_github() {
+                            config.todos = github_todos;
+                            // Save synced todos to local cache
+                            let _ = config.save();
+                        }
+                    }
+                    Ok(config)
+                }
                 Err(e) => {
                     eprintln!("Warning: Failed to parse lfg-config.yaml: {}", e);
                     eprintln!("Creating backup and generating new default config...");
@@ -110,8 +144,8 @@ impl AppConfig {
                 }
             }
         } else {
-            // Create default config
-            let config = Self::default();
+            // Run init wizard to create config
+            let config = crate::init::run_init_wizard()?;
             config.save()?;
             Ok(config)
         }
@@ -142,15 +176,35 @@ impl AppConfig {
         }) {
             todo.status = TodoStatus::Done;
         }
+
+        // Sync to GitHub if using GitHub backend
+        if let StorageBackend::Github { ref owner, ref repo, project_number } = self.storage_backend {
+            let client = crate::github::GitHubClient::new(
+                owner.clone(),
+                repo.clone(),
+                project_number,
+            );
+            let _ = client.mark_todo_done(worktree_name);
+        }
     }
 
     /// Create a new todo linked to a worktree
     pub fn add_todo(&mut self, description: String, worktree_name: String) {
         self.todos.insert(0, Todo {
-            description,
+            description: description.clone(),
             status: TodoStatus::Pending,
-            worktree: Some(worktree_name),
+            worktree: Some(worktree_name.clone()),
         });
+
+        // Sync to GitHub if using GitHub backend
+        if let StorageBackend::Github { ref owner, ref repo, project_number } = self.storage_backend {
+            let client = crate::github::GitHubClient::new(
+                owner.clone(),
+                repo.clone(),
+                project_number,
+            );
+            let _ = client.add_todo(&description, &worktree_name);
+        }
     }
 }
 
@@ -159,6 +213,7 @@ impl Default for AppConfig {
         Self {
             name: "default".to_string(),
             worktree_naming: "Add feature".to_string(),
+            storage_backend: StorageBackend::Local,
             todos: vec![],
             windows: vec![
                 TmuxWindow {

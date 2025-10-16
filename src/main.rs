@@ -4,6 +4,8 @@ use clap::Parser;
 mod cli;
 mod config;
 mod git;
+mod github;
+mod init;
 mod tmux;
 mod tui;
 

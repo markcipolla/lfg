@@ -4,6 +4,8 @@
 pub mod cli;
 pub mod config;
 pub mod git;
+pub mod github;
+pub mod init;
 pub mod tmux;
 pub mod tui;
 
