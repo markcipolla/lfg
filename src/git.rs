@@ -134,6 +134,47 @@ pub fn jump_to_worktree(name: &str) -> Result<()> {
     crate::tmux::start_session(name, &worktree.path)
 }
 
+/// Check if a worktree has uncommitted changes
+pub fn is_worktree_dirty(path: &PathBuf) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["-C", path.to_str().unwrap(), "status", "--porcelain"])
+        .output()
+        .context("Failed to check worktree status")?;
+
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    // If output is not empty, there are uncommitted changes
+    Ok(!output.stdout.is_empty())
+}
+
+/// Delete a worktree
+pub fn delete_worktree(path: &PathBuf, force: bool) -> Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.args(["worktree", "remove"]);
+
+    if force {
+        cmd.arg("--force");
+    }
+
+    cmd.arg(path);
+
+    let output = cmd.output().context("Failed to delete worktree")?;
+
+    if !output.status.success() {
+        return Err(anyhow!(
+            "Failed to delete worktree: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

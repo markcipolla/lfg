@@ -19,6 +19,8 @@ use crate::git::{self, Worktree};
 enum InputMode {
     Normal,
     CreatingWorktree,
+    Help,
+    ConfirmDelete,
 }
 
 struct App {
@@ -29,6 +31,9 @@ struct App {
     branch_input: String,
     input_step: usize, // 0 = name, 1 = branch
     error_message: Option<String>,
+    button_selected: bool, // true when "New Worktree" button is selected
+    worktree_to_delete: Option<Worktree>,
+    delete_is_dirty: bool,
 }
 
 impl App {
@@ -54,46 +59,95 @@ impl App {
             branch_input: String::new(),
             input_step: 0,
             error_message: None,
+            button_selected: false,
+            worktree_to_delete: None,
+            delete_is_dirty: false,
         })
     }
 
     fn next(&mut self) {
-        if self.worktrees.is_empty() {
-            return;
-        }
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i >= self.worktrees.len() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
+        if self.button_selected {
+            // From button, go to first item or stay on button if empty
+            if !self.worktrees.is_empty() {
+                self.button_selected = false;
+                self.list_state.select(Some(0));
             }
-            None => 0,
-        };
-        self.list_state.select(Some(i));
+        } else {
+            // In list, navigate down or move to button
+            let i = match self.list_state.selected() {
+                Some(i) => {
+                    if i >= self.worktrees.len() - 1 {
+                        // Last item, move to button
+                        self.button_selected = true;
+                        self.list_state.select(None);
+                        return;
+                    } else {
+                        i + 1
+                    }
+                }
+                None => {
+                    if self.worktrees.is_empty() {
+                        self.button_selected = true;
+                        return;
+                    }
+                    0
+                }
+            };
+            self.list_state.select(Some(i));
+        }
     }
 
     fn previous(&mut self) {
-        if self.worktrees.is_empty() {
-            return;
+        if self.button_selected {
+            // From button, go to last item
+            if !self.worktrees.is_empty() {
+                self.button_selected = false;
+                self.list_state.select(Some(self.worktrees.len() - 1));
+            }
+        } else {
+            // In list, navigate up or move to button
+            let i = match self.list_state.selected() {
+                Some(i) => {
+                    if i == 0 {
+                        // First item, move to button
+                        self.button_selected = true;
+                        self.list_state.select(None);
+                        return;
+                    } else {
+                        i - 1
+                    }
+                }
+                None => {
+                    if self.worktrees.is_empty() {
+                        self.button_selected = true;
+                        return;
+                    }
+                    0
+                }
+            };
+            self.list_state.select(Some(i));
         }
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.worktrees.len() - 1
-                } else {
-                    i - 1
+    }
+
+    fn toggle_button_focus(&mut self) {
+        if self.button_selected {
+            // Move focus to list
+            if !self.worktrees.is_empty() {
+                self.button_selected = false;
+                if self.list_state.selected().is_none() {
+                    self.list_state.select(Some(0));
                 }
             }
-            None => 0,
-        };
-        self.list_state.select(Some(i));
+        } else {
+            // Move focus to button
+            self.button_selected = true;
+            self.list_state.select(None);
+        }
     }
 
     fn refresh_worktrees(&mut self) -> Result<()> {
         self.worktrees = git::list_worktrees()?;
-        if !self.worktrees.is_empty() && self.list_state.selected().is_none() {
+        if !self.worktrees.is_empty() && self.list_state.selected().is_none() && !self.button_selected {
             self.list_state.select(Some(0));
         }
         Ok(())
@@ -105,6 +159,64 @@ impl App {
         self.branch_input.clear();
         self.input_step = 0;
         self.error_message = None;
+    }
+
+    fn toggle_help(&mut self) {
+        self.input_mode = match self.input_mode {
+            InputMode::Help => InputMode::Normal,
+            _ => InputMode::Help,
+        };
+    }
+
+    fn start_delete_worktree(&mut self) -> Result<()> {
+        if let Some(i) = self.list_state.selected() {
+            if i < self.worktrees.len() {
+                let worktree = self.worktrees[i].clone();
+
+                // Check if worktree has uncommitted changes
+                let is_dirty = git::is_worktree_dirty(&worktree.path)?;
+
+                self.worktree_to_delete = Some(worktree);
+                self.delete_is_dirty = is_dirty;
+                self.input_mode = InputMode::ConfirmDelete;
+            }
+        }
+        Ok(())
+    }
+
+    fn confirm_delete(&mut self) -> Result<()> {
+        if let Some(worktree) = &self.worktree_to_delete {
+            let force = self.delete_is_dirty;
+
+            // Check if we're in a tmux session with the same name as the worktree
+            let current_session = crate::tmux::get_current_session();
+            let should_kill_session = current_session.as_ref() == Some(&worktree.name);
+
+            match git::delete_worktree(&worktree.path, force) {
+                Ok(_) => {
+                    // If we were in the tmux session for this worktree, kill it
+                    if should_kill_session {
+                        if let Err(e) = crate::tmux::kill_session(&worktree.name) {
+                            eprintln!("Warning: Failed to kill tmux session: {}", e);
+                        }
+                    }
+
+                    self.refresh_worktrees()?;
+                    self.cancel_delete();
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to delete worktree: {}", e));
+                    self.cancel_delete();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn cancel_delete(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.worktree_to_delete = None;
+        self.delete_is_dirty = false;
     }
 
     fn cancel_input(&mut self) {
@@ -206,12 +318,20 @@ fn run_app<B: ratatui::backend::Backend>(
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Char('j') | KeyCode::Down => app.next(),
                     KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                    KeyCode::Tab => app.toggle_button_focus(),
+                    KeyCode::Char('?') => app.toggle_help(),
                     KeyCode::Char('n') | KeyCode::Char('c') => app.start_create_worktree(),
+                    KeyCode::Char('d') | KeyCode::Delete => {
+                        app.start_delete_worktree()?;
+                    }
                     KeyCode::Char('r') => {
                         app.refresh_worktrees()?;
                     }
                     KeyCode::Enter => {
-                        if let Some(i) = app.list_state.selected() {
+                        if app.button_selected {
+                            // Button selected, create new worktree
+                            app.start_create_worktree();
+                        } else if let Some(i) = app.list_state.selected() {
                             if i < app.worktrees.len() {
                                 let worktree = &app.worktrees[i];
                                 // Exit TUI and start tmux session
@@ -219,6 +339,19 @@ fn run_app<B: ratatui::backend::Backend>(
                                 return crate::tmux::start_session(&worktree.name, &worktree.path);
                             }
                         }
+                    }
+                    _ => {}
+                },
+                InputMode::Help => match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => app.toggle_help(),
+                    _ => {}
+                },
+                InputMode::ConfirmDelete => match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                        app.confirm_delete()?;
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        app.cancel_delete();
                     }
                     _ => {}
                 },
@@ -268,10 +401,28 @@ fn ui(f: &mut Frame, app: &App) {
             render_create_worktree(f, app, chunks[1]);
             render_input_help(f, chunks[2]);
         }
+        InputMode::Help => {
+            render_full_help(f, chunks[1]);
+            let help_footer = Paragraph::new("Press ? or Esc to close")
+                .style(Style::default().fg(Color::Gray))
+                .block(Block::default().borders(Borders::ALL));
+            f.render_widget(help_footer, chunks[2]);
+        }
+        InputMode::ConfirmDelete => {
+            render_worktree_list(f, app, chunks[1]);
+            render_confirm_delete(f, app, chunks[2]);
+        }
     }
 }
 
 fn render_worktree_list(f: &mut Frame, app: &App, area: Rect) {
+    // Split area into list and button sections
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(area);
+
+    // Render worktree list
     let items: Vec<ListItem> = app
         .worktrees
         .iter()
@@ -298,7 +449,7 @@ fn render_worktree_list(f: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Worktrees (↑↓/jk to navigate, Enter to select)"),
+                .title("Worktrees (↑↓/jk to navigate, Tab to toggle, Enter to select)"),
         )
         .highlight_style(
             Style::default()
@@ -307,7 +458,31 @@ fn render_worktree_list(f: &mut Frame, app: &App, area: Rect) {
         )
         .highlight_symbol(">> ");
 
-    f.render_stateful_widget(list, area, &mut app.list_state.clone());
+    f.render_stateful_widget(list, chunks[0], &mut app.list_state.clone());
+
+    // Render "New Worktree" button
+    let button_style = if app.button_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    let button_text = if app.button_selected {
+        "[ ✨ New Worktree ]"
+    } else {
+        "  ✨ New Worktree  "
+    };
+
+    let button = Paragraph::new(button_text)
+        .style(button_style)
+        .block(Block::default().borders(Borders::ALL));
+
+    f.render_widget(button, chunks[1]);
 }
 
 fn render_create_worktree(f: &mut Frame, app: &App, area: Rect) {
@@ -355,9 +530,26 @@ fn render_create_worktree(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_help(f: &mut Frame, area: Rect) {
-    let help = Paragraph::new("q/Esc: Quit | n/c: New worktree | r: Refresh | Enter: Select")
+    let width = area.width;
+
+    // Choose help text based on available width
+    let help_text = if width >= 90 {
+        // Full help text for wide screens
+        "q: Quit | n: New | d: Delete | r: Refresh | Tab: Toggle | Enter: Select | ?: Help"
+    } else if width >= 70 {
+        // Medium screens - abbreviate slightly
+        "q: Quit | n: New | d: Delete | r: Refresh | Tab: Toggle | ?: Help"
+    } else if width >= 50 {
+        // Small screens - more compact
+        "q: Quit | n: New | d: Del | r: Refresh | ?: Help"
+    } else {
+        // Very small screens - minimal
+        "q: Quit | n: New | d: Del | ?: Help"
+    };
+
+    let help = Paragraph::new(help_text)
         .style(Style::default().fg(Color::Gray))
-        .block(Block::default().borders(Borders::ALL));
+        .block(Block::default().borders(Borders::ALL).title("Keys"));
     f.render_widget(help, area);
 }
 
@@ -366,4 +558,107 @@ fn render_input_help(f: &mut Frame, area: Rect) {
         .style(Style::default().fg(Color::Gray))
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(help, area);
+}
+
+fn render_full_help(f: &mut Frame, area: Rect) {
+    let help_text = vec![
+        Line::from(vec![
+            Span::styled("Navigation", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ↑/k        ", Style::default().fg(Color::Yellow)),
+            Span::raw("Move selection up"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ↓/j        ", Style::default().fg(Color::Yellow)),
+            Span::raw("Move selection down"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Tab        ", Style::default().fg(Color::Yellow)),
+            Span::raw("Toggle between list and New button"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter      ", Style::default().fg(Color::Yellow)),
+            Span::raw("Select worktree or activate button"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Actions", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  n/c        ", Style::default().fg(Color::Yellow)),
+            Span::raw("Create new worktree"),
+        ]),
+        Line::from(vec![
+            Span::styled("  d          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Delete selected worktree"),
+        ]),
+        Line::from(vec![
+            Span::styled("  r          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Refresh worktree list"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ?          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Toggle this help screen"),
+        ]),
+        Line::from(vec![
+            Span::styled("  q/Esc      ", Style::default().fg(Color::Yellow)),
+            Span::raw("Quit application"),
+        ]),
+    ];
+
+    let help = Paragraph::new(help_text)
+        .block(Block::default().borders(Borders::ALL).title("Help"))
+        .style(Style::default().fg(Color::Gray));
+
+    f.render_widget(help, area);
+}
+
+fn render_confirm_delete(f: &mut Frame, app: &App, area: Rect) {
+    if let Some(worktree) = &app.worktree_to_delete {
+        let message = if app.delete_is_dirty {
+            vec![
+                Line::from(vec![
+                    Span::styled("⚠ WARNING: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::styled("This worktree has uncommitted changes!", Style::default().fg(Color::Yellow)),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("Delete worktree '"),
+                    Span::styled(&worktree.name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::raw("'?"),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Y", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    Span::raw("es (force delete) | "),
+                    Span::styled("N", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::raw("o / Esc"),
+                ]),
+            ]
+        } else {
+            vec![
+                Line::from(vec![
+                    Span::raw("Delete worktree '"),
+                    Span::styled(&worktree.name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::raw("'?"),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Y", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    Span::raw("es | "),
+                    Span::styled("N", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::raw("o / Esc"),
+                ]),
+            ]
+        };
+
+        let confirm = Paragraph::new(message)
+            .block(Block::default().borders(Borders::ALL).title("Confirm Delete"))
+            .style(Style::default());
+
+        f.render_widget(confirm, area);
+    }
 }
