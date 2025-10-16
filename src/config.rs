@@ -146,7 +146,7 @@ impl AppConfig {
 
     /// Create a new todo linked to a worktree
     pub fn add_todo(&mut self, description: String, worktree_name: String) {
-        self.todos.push(Todo {
+        self.todos.insert(0, Todo {
             description,
             status: TodoStatus::Pending,
             worktree: Some(worktree_name),
@@ -477,5 +477,117 @@ windows = []
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("Config"));
         assert!(debug_str.contains("windows"));
+    }
+
+    #[test]
+    fn test_add_todo_adds_to_top() {
+        let mut app_config = AppConfig::default();
+
+        // Add first todo
+        app_config.add_todo("First todo".to_string(), "worktree1".to_string());
+        assert_eq!(app_config.todos.len(), 1);
+        assert_eq!(app_config.todos[0].description, "First todo");
+        assert_eq!(app_config.todos[0].worktree, Some("worktree1".to_string()));
+        assert_eq!(app_config.todos[0].status, TodoStatus::Pending);
+
+        // Add second todo - should be inserted at the top (index 0)
+        app_config.add_todo("Second todo".to_string(), "worktree2".to_string());
+        assert_eq!(app_config.todos.len(), 2);
+        assert_eq!(app_config.todos[0].description, "Second todo");
+        assert_eq!(app_config.todos[0].worktree, Some("worktree2".to_string()));
+        assert_eq!(app_config.todos[1].description, "First todo");
+        assert_eq!(app_config.todos[1].worktree, Some("worktree1".to_string()));
+
+        // Add third todo - should be at the top
+        app_config.add_todo("Third todo".to_string(), "worktree3".to_string());
+        assert_eq!(app_config.todos.len(), 3);
+        assert_eq!(app_config.todos[0].description, "Third todo");
+        assert_eq!(app_config.todos[1].description, "Second todo");
+        assert_eq!(app_config.todos[2].description, "First todo");
+    }
+
+    #[test]
+    fn test_add_todo_preserves_order() {
+        let mut app_config = AppConfig::default();
+
+        // Add multiple todos
+        app_config.add_todo("Todo A".to_string(), "worktree-a".to_string());
+        app_config.add_todo("Todo B".to_string(), "worktree-b".to_string());
+        app_config.add_todo("Todo C".to_string(), "worktree-c".to_string());
+
+        // Most recently added should be first
+        assert_eq!(app_config.todos[0].description, "Todo C");
+        assert_eq!(app_config.todos[1].description, "Todo B");
+        assert_eq!(app_config.todos[2].description, "Todo A");
+    }
+
+    #[test]
+    fn test_add_todo_with_empty_list() {
+        let mut app_config = AppConfig::default();
+        assert_eq!(app_config.todos.len(), 0);
+
+        app_config.add_todo("First in empty list".to_string(), "worktree1".to_string());
+        assert_eq!(app_config.todos.len(), 1);
+        assert_eq!(app_config.todos[0].description, "First in empty list");
+    }
+
+    #[test]
+    fn test_add_todo_status_defaults_to_pending() {
+        let mut app_config = AppConfig::default();
+        app_config.add_todo("New todo".to_string(), "worktree1".to_string());
+
+        assert_eq!(app_config.todos[0].status, TodoStatus::Pending);
+    }
+
+    #[test]
+    fn test_mark_todo_done() {
+        let mut app_config = AppConfig::default();
+        app_config.add_todo("Test todo".to_string(), "test-worktree".to_string());
+
+        assert_eq!(app_config.todos[0].status, TodoStatus::Pending);
+
+        app_config.mark_todo_done("test-worktree");
+
+        assert_eq!(app_config.todos[0].status, TodoStatus::Done);
+    }
+
+    #[test]
+    fn test_mark_todo_done_with_multiple_todos() {
+        let mut app_config = AppConfig::default();
+        app_config.add_todo("Todo 1".to_string(), "worktree1".to_string());
+        app_config.add_todo("Todo 2".to_string(), "worktree2".to_string());
+        app_config.add_todo("Todo 3".to_string(), "worktree3".to_string());
+
+        // Mark the middle one as done
+        app_config.mark_todo_done("worktree2");
+
+        // Check that only worktree2 is marked as done
+        assert_eq!(app_config.todos[2].status, TodoStatus::Pending); // worktree1
+        assert_eq!(app_config.todos[1].status, TodoStatus::Done);    // worktree2
+        assert_eq!(app_config.todos[0].status, TodoStatus::Pending); // worktree3
+    }
+
+    #[test]
+    fn test_mark_todo_done_nonexistent_worktree() {
+        let mut app_config = AppConfig::default();
+        app_config.add_todo("Todo 1".to_string(), "worktree1".to_string());
+
+        // Try to mark a non-existent worktree as done
+        app_config.mark_todo_done("nonexistent");
+
+        // The existing todo should remain pending
+        assert_eq!(app_config.todos[0].status, TodoStatus::Pending);
+    }
+
+    #[test]
+    fn test_todo_status_default() {
+        let status = TodoStatus::default();
+        assert_eq!(status, TodoStatus::Pending);
+    }
+
+    #[test]
+    fn test_app_config_default_has_empty_todos() {
+        let app_config = AppConfig::default();
+        assert_eq!(app_config.todos.len(), 0);
     }
 }

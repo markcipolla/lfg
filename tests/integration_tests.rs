@@ -263,3 +263,113 @@ mod property_based_tests {
         assert_eq!(loaded.windows[1].command, Some("echo '🚀'".to_string()));
     }
 }
+
+// Todo-related integration tests
+
+#[test]
+fn test_add_todo_integration_new_todos_at_top() {
+    // Integration test: Verify new todos are added to the top of the list
+    let mut app_config = config::AppConfig::default();
+
+    // Start with empty todos
+    assert_eq!(app_config.todos.len(), 0);
+
+    // Add first todo
+    app_config.add_todo("First task".to_string(), "worktree-1".to_string());
+    assert_eq!(app_config.todos.len(), 1);
+    assert_eq!(app_config.todos[0].description, "First task");
+
+    // Add second todo - should appear at index 0
+    app_config.add_todo("Second task".to_string(), "worktree-2".to_string());
+    assert_eq!(app_config.todos.len(), 2);
+    assert_eq!(app_config.todos[0].description, "Second task");
+    assert_eq!(app_config.todos[1].description, "First task");
+
+    // Add third todo - should appear at index 0
+    app_config.add_todo("Third task".to_string(), "worktree-3".to_string());
+    assert_eq!(app_config.todos.len(), 3);
+    assert_eq!(app_config.todos[0].description, "Third task");
+    assert_eq!(app_config.todos[1].description, "Second task");
+    assert_eq!(app_config.todos[2].description, "First task");
+}
+
+#[test]
+fn test_todo_persistence_with_save_and_load() {
+    // Integration test: Verify todos persist correctly when saved and loaded
+    let temp_dir = std::env::temp_dir();
+    let test_yaml_path = temp_dir.join("lfg_todo_persistence_test.yaml");
+
+    // Clean up if exists
+    let _ = std::fs::remove_file(&test_yaml_path);
+
+    // Create config with multiple todos added in sequence
+    let mut app_config = config::AppConfig::default();
+    app_config.add_todo("Task A".to_string(), "wt-a".to_string());
+    app_config.add_todo("Task B".to_string(), "wt-b".to_string());
+    app_config.add_todo("Task C".to_string(), "wt-c".to_string());
+
+    // Verify order before save
+    assert_eq!(app_config.todos[0].description, "Task C");
+    assert_eq!(app_config.todos[1].description, "Task B");
+    assert_eq!(app_config.todos[2].description, "Task A");
+
+    // Save to YAML
+    let yaml_content = serde_yaml::to_string(&app_config).unwrap();
+    std::fs::write(&test_yaml_path, &yaml_content).unwrap();
+
+    // Load from YAML
+    let loaded_content = std::fs::read_to_string(&test_yaml_path).unwrap();
+    let loaded_config: config::AppConfig = serde_yaml::from_str(&loaded_content).unwrap();
+
+    // Verify order is preserved after load
+    assert_eq!(loaded_config.todos.len(), 3);
+    assert_eq!(loaded_config.todos[0].description, "Task C");
+    assert_eq!(loaded_config.todos[1].description, "Task B");
+    assert_eq!(loaded_config.todos[2].description, "Task A");
+
+    // Verify worktree associations
+    assert_eq!(loaded_config.todos[0].worktree, Some("wt-c".to_string()));
+    assert_eq!(loaded_config.todos[1].worktree, Some("wt-b".to_string()));
+    assert_eq!(loaded_config.todos[2].worktree, Some("wt-a".to_string()));
+
+    // Clean up
+    let _ = std::fs::remove_file(&test_yaml_path);
+}
+
+#[test]
+fn test_todo_workflow_simulation() {
+    // Simulate a realistic workflow: create multiple worktrees, mark some done
+    let mut app_config = config::AppConfig::default();
+
+    // Day 1: Start work on feature
+    app_config.add_todo("Implement user authentication".to_string(), "feature-auth".to_string());
+
+    // Day 2: Start bug fix
+    app_config.add_todo("Fix login redirect bug".to_string(), "bugfix-login".to_string());
+
+    // Day 3: Start another feature
+    app_config.add_todo("Add password reset".to_string(), "feature-reset-password".to_string());
+
+    // Check current state - most recent should be first
+    assert_eq!(app_config.todos[0].description, "Add password reset");
+    assert_eq!(app_config.todos[1].description, "Fix login redirect bug");
+    assert_eq!(app_config.todos[2].description, "Implement user authentication");
+
+    // Complete the bug fix
+    app_config.mark_todo_done("bugfix-login");
+
+    // Verify status
+    assert_eq!(app_config.todos[0].status, config::TodoStatus::Pending);
+    assert_eq!(app_config.todos[1].status, config::TodoStatus::Done);
+    assert_eq!(app_config.todos[2].status, config::TodoStatus::Pending);
+
+    // Day 4: Start documentation
+    app_config.add_todo("Update API docs".to_string(), "docs-api".to_string());
+
+    // Verify new todo is at the top
+    assert_eq!(app_config.todos[0].description, "Update API docs");
+    assert_eq!(app_config.todos[0].status, config::TodoStatus::Pending);
+
+    // Total should be 4 todos
+    assert_eq!(app_config.todos.len(), 4);
+}
