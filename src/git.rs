@@ -157,4 +157,117 @@ branch refs/heads/feature
         assert_eq!(worktrees[1].name, "project-feature");
         assert_eq!(worktrees[1].branch, "feature");
     }
+
+    #[test]
+    fn test_parse_worktrees_without_trailing_newline() {
+        let output = r#"worktree /Users/test/project
+HEAD 1234567890abcdef
+branch refs/heads/main"#;
+
+        let worktrees = parse_worktrees(output).unwrap();
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0].name, "project");
+        assert_eq!(worktrees[0].branch, "main");
+        assert_eq!(worktrees[0].path, PathBuf::from("/Users/test/project"));
+    }
+
+    #[test]
+    fn test_parse_worktrees_empty_output() {
+        let output = "";
+        let worktrees = parse_worktrees(output).unwrap();
+        assert_eq!(worktrees.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_worktrees_single_worktree() {
+        let output = r#"worktree /home/user/repo
+HEAD 1234567890abcdef
+branch refs/heads/develop
+
+"#;
+
+        let worktrees = parse_worktrees(output).unwrap();
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0].name, "repo");
+        assert_eq!(worktrees[0].branch, "develop");
+        assert_eq!(worktrees[0].path, PathBuf::from("/home/user/repo"));
+    }
+
+    #[test]
+    fn test_parse_worktrees_branch_without_refs_heads() {
+        let output = r#"worktree /Users/test/project
+HEAD 1234567890abcdef
+branch main
+
+"#;
+
+        let worktrees = parse_worktrees(output).unwrap();
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0].branch, "main");
+    }
+
+    #[test]
+    fn test_parse_worktrees_multiple_worktrees_no_trailing_newline() {
+        let output = r#"worktree /Users/test/project
+HEAD 1234567890abcdef
+branch refs/heads/main
+
+worktree /Users/test/project-feature
+HEAD abcdef1234567890
+branch refs/heads/feature"#;
+
+        let worktrees = parse_worktrees(output).unwrap();
+        assert_eq!(worktrees.len(), 2);
+        assert_eq!(worktrees[0].name, "project");
+        assert_eq!(worktrees[0].branch, "main");
+        assert_eq!(worktrees[1].name, "project-feature");
+        assert_eq!(worktrees[1].branch, "feature");
+    }
+
+    #[test]
+    fn test_parse_worktrees_complex_paths() {
+        let output = r#"worktree /Users/test/my-awesome-project
+HEAD 1234567890abcdef
+branch refs/heads/feature/new-feature
+
+worktree /home/user/projects/repo_with_underscores
+HEAD abcdef1234567890
+branch refs/heads/bugfix/fix-123
+
+"#;
+
+        let worktrees = parse_worktrees(output).unwrap();
+        assert_eq!(worktrees.len(), 2);
+        assert_eq!(worktrees[0].name, "my-awesome-project");
+        assert_eq!(worktrees[0].branch, "feature/new-feature");
+        assert_eq!(worktrees[1].name, "repo_with_underscores");
+        assert_eq!(worktrees[1].branch, "bugfix/fix-123");
+    }
+
+    #[test]
+    fn test_worktree_struct_clone() {
+        let worktree = Worktree {
+            name: "test".to_string(),
+            path: PathBuf::from("/test/path"),
+            branch: "main".to_string(),
+        };
+
+        let cloned = worktree.clone();
+        assert_eq!(cloned.name, "test");
+        assert_eq!(cloned.path, PathBuf::from("/test/path"));
+        assert_eq!(cloned.branch, "main");
+    }
+
+    #[test]
+    fn test_worktree_struct_debug() {
+        let worktree = Worktree {
+            name: "test".to_string(),
+            path: PathBuf::from("/test/path"),
+            branch: "main".to_string(),
+        };
+
+        let debug_str = format!("{:?}", worktree);
+        assert!(debug_str.contains("test"));
+        assert!(debug_str.contains("main"));
+    }
 }
