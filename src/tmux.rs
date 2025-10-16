@@ -106,8 +106,23 @@ fn attach_session(session_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Get the current tmux session name (if running inside tmux)
+pub fn get_current_session() -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["display-message", "-p", "#S"])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        String::from_utf8(output.stdout)
+            .ok()
+            .map(|s| s.trim().to_string())
+    } else {
+        None
+    }
+}
+
 /// Kill a tmux session
-#[allow(dead_code)]
 pub fn kill_session(session_name: &str) -> Result<()> {
     if !session_exists(session_name)? {
         return Ok(());

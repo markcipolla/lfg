@@ -20,6 +20,7 @@ enum InputMode {
     Normal,
     CreatingWorktree,
     Help,
+    ConfirmDelete,
 }
 
 struct App {
@@ -31,6 +32,8 @@ struct App {
     input_step: usize, // 0 = name, 1 = branch
     error_message: Option<String>,
     button_selected: bool, // true when "New Worktree" button is selected
+    worktree_to_delete: Option<Worktree>,
+    delete_is_dirty: bool,
 }
 
 impl App {
@@ -50,6 +53,8 @@ impl App {
             input_step: 0,
             error_message: None,
             button_selected: false,
+            worktree_to_delete: None,
+            delete_is_dirty: false,
         })
     }
 
@@ -156,6 +161,57 @@ impl App {
         };
     }
 
+    fn start_delete_worktree(&mut self) -> Result<()> {
+        if let Some(i) = self.list_state.selected() {
+            if i < self.worktrees.len() {
+                let worktree = self.worktrees[i].clone();
+
+                // Check if worktree has uncommitted changes
+                let is_dirty = git::is_worktree_dirty(&worktree.path)?;
+
+                self.worktree_to_delete = Some(worktree);
+                self.delete_is_dirty = is_dirty;
+                self.input_mode = InputMode::ConfirmDelete;
+            }
+        }
+        Ok(())
+    }
+
+    fn confirm_delete(&mut self) -> Result<()> {
+        if let Some(worktree) = &self.worktree_to_delete {
+            let force = self.delete_is_dirty;
+
+            // Check if we're in a tmux session with the same name as the worktree
+            let current_session = crate::tmux::get_current_session();
+            let should_kill_session = current_session.as_ref() == Some(&worktree.name);
+
+            match git::delete_worktree(&worktree.path, force) {
+                Ok(_) => {
+                    // If we were in the tmux session for this worktree, kill it
+                    if should_kill_session {
+                        if let Err(e) = crate::tmux::kill_session(&worktree.name) {
+                            eprintln!("Warning: Failed to kill tmux session: {}", e);
+                        }
+                    }
+
+                    self.refresh_worktrees()?;
+                    self.cancel_delete();
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to delete worktree: {}", e));
+                    self.cancel_delete();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn cancel_delete(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.worktree_to_delete = None;
+        self.delete_is_dirty = false;
+    }
+
     fn cancel_input(&mut self) {
         self.input_mode = InputMode::Normal;
         self.input.clear();
@@ -255,6 +311,9 @@ fn run_app<B: ratatui::backend::Backend>(
                     KeyCode::Tab => app.toggle_button_focus(),
                     KeyCode::Char('?') => app.toggle_help(),
                     KeyCode::Char('n') | KeyCode::Char('c') => app.start_create_worktree(),
+                    KeyCode::Char('d') | KeyCode::Delete => {
+                        app.start_delete_worktree()?;
+                    }
                     KeyCode::Char('r') => {
                         app.refresh_worktrees()?;
                     }
@@ -275,6 +334,15 @@ fn run_app<B: ratatui::backend::Backend>(
                 },
                 InputMode::Help => match key.code {
                     KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => app.toggle_help(),
+                    _ => {}
+                },
+                InputMode::ConfirmDelete => match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                        app.confirm_delete()?;
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        app.cancel_delete();
+                    }
                     _ => {}
                 },
                 InputMode::CreatingWorktree => match key.code {
@@ -329,6 +397,10 @@ fn ui(f: &mut Frame, app: &App) {
                 .style(Style::default().fg(Color::Gray))
                 .block(Block::default().borders(Borders::ALL));
             f.render_widget(help_footer, chunks[2]);
+        }
+        InputMode::ConfirmDelete => {
+            render_worktree_list(f, app, chunks[1]);
+            render_confirm_delete(f, app, chunks[2]);
         }
     }
 }
@@ -451,18 +523,18 @@ fn render_help(f: &mut Frame, area: Rect) {
     let width = area.width;
 
     // Choose help text based on available width
-    let help_text = if width >= 80 {
+    let help_text = if width >= 90 {
         // Full help text for wide screens
-        "q/Esc: Quit | n/c: New worktree | r: Refresh | Tab: Toggle | Enter: Select"
-    } else if width >= 60 {
+        "q: Quit | n: New | d: Delete | r: Refresh | Tab: Toggle | Enter: Select | ?: Help"
+    } else if width >= 70 {
         // Medium screens - abbreviate slightly
-        "q: Quit | n: New | r: Refresh | Tab: Toggle | Enter: Select"
-    } else if width >= 45 {
-        // Small screens - use symbols
-        "q: Quit | n: New | r: Refresh | ⇥: Toggle"
+        "q: Quit | n: New | d: Delete | r: Refresh | Tab: Toggle | ?: Help"
+    } else if width >= 50 {
+        // Small screens - more compact
+        "q: Quit | n: New | d: Del | r: Refresh | ?: Help"
     } else {
         // Very small screens - minimal
-        "q: Quit | n: New | ?: Help"
+        "q: Quit | n: New | d: Del | ?: Help"
     };
 
     let help = Paragraph::new(help_text)
@@ -510,6 +582,10 @@ fn render_full_help(f: &mut Frame, area: Rect) {
             Span::raw("Create new worktree"),
         ]),
         Line::from(vec![
+            Span::styled("  d          ", Style::default().fg(Color::Yellow)),
+            Span::raw("Delete selected worktree"),
+        ]),
+        Line::from(vec![
             Span::styled("  r          ", Style::default().fg(Color::Yellow)),
             Span::raw("Refresh worktree list"),
         ]),
@@ -528,4 +604,51 @@ fn render_full_help(f: &mut Frame, area: Rect) {
         .style(Style::default().fg(Color::Gray));
 
     f.render_widget(help, area);
+}
+
+fn render_confirm_delete(f: &mut Frame, app: &App, area: Rect) {
+    if let Some(worktree) = &app.worktree_to_delete {
+        let message = if app.delete_is_dirty {
+            vec![
+                Line::from(vec![
+                    Span::styled("⚠ WARNING: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::styled("This worktree has uncommitted changes!", Style::default().fg(Color::Yellow)),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::raw("Delete worktree '"),
+                    Span::styled(&worktree.name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::raw("'?"),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Y", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    Span::raw("es (force delete) | "),
+                    Span::styled("N", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::raw("o / Esc"),
+                ]),
+            ]
+        } else {
+            vec![
+                Line::from(vec![
+                    Span::raw("Delete worktree '"),
+                    Span::styled(&worktree.name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::raw("'?"),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Y", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                    Span::raw("es | "),
+                    Span::styled("N", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::raw("o / Esc"),
+                ]),
+            ]
+        };
+
+        let confirm = Paragraph::new(message)
+            .block(Block::default().borders(Borders::ALL).title("Confirm Delete"))
+            .style(Style::default());
+
+        f.render_widget(confirm, area);
+    }
 }
