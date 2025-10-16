@@ -18,7 +18,9 @@ pub fn is_available() -> bool {
 /// Check if tmux is installed and exit with error if not
 pub fn ensure_installed() -> Result<()> {
     if !is_available() {
-        return Err(anyhow!("tmux is not installed or not in PATH. Please install tmux first."));
+        return Err(anyhow!(
+            "tmux is not installed or not in PATH. Please install tmux first."
+        ));
     }
     Ok(())
 }
@@ -44,15 +46,9 @@ fn set_window_title(session_name: &str, window_index: usize, title: &str) -> Res
         .context("Failed to enable terminal titles")?;
 
     // Set the title string for the specific window
-    let target = format!("{}:{}", session_name, window_index);
+    let target = format!("{session_name}:{window_index}");
     Command::new("tmux")
-        .args([
-            "set-option",
-            "-t",
-            &target,
-            "set-titles-string",
-            title,
-        ])
+        .args(["set-option", "-t", &target, "set-titles-string", title])
         .output()
         .context("Failed to set window title")?;
 
@@ -60,7 +56,11 @@ fn set_window_title(session_name: &str, window_index: usize, title: &str) -> Res
 }
 
 /// Start a new tmux session with app-specific configuration
-pub fn start_session_with_app(session_name: &str, worktree_path: &Path, app_config: &AppConfig) -> Result<()> {
+pub fn start_session_with_app(
+    session_name: &str,
+    worktree_path: &Path,
+    app_config: &AppConfig,
+) -> Result<()> {
     ensure_installed()?;
 
     // Check if session already exists
@@ -95,7 +95,10 @@ pub fn start_session_with_app(session_name: &str, worktree_path: &Path, app_conf
 
         // Set the terminal title for the first window
         if let Err(e) = set_window_title(session_name, 0, &first_window.name) {
-            eprintln!("Warning: Failed to set title for window {}: {}", first_window.name, e);
+            eprintln!(
+                "Warning: Failed to set title for window {}: {}",
+                first_window.name, e
+            );
         }
 
         // Create remaining windows
@@ -119,7 +122,10 @@ pub fn start_session_with_app(session_name: &str, worktree_path: &Path, app_conf
             } else {
                 // Set the terminal title for this window (index + 1 because we skipped the first)
                 if let Err(e) = set_window_title(session_name, index + 1, &window.name) {
-                    eprintln!("Warning: Failed to set title for window {}: {}", window.name, e);
+                    eprintln!(
+                        "Warning: Failed to set title for window {}: {}",
+                        window.name, e
+                    );
                 }
             }
         }
@@ -190,7 +196,10 @@ pub fn start_session(session_name: &str, worktree_path: &Path) -> Result<()> {
             } else {
                 // Set the terminal title for this window (index + 1 because we skipped the first)
                 if let Err(e) = set_window_title(session_name, index + 1, &window.name) {
-                    eprintln!("Warning: Failed to set title for window {}: {}", window.name, e);
+                    eprintln!(
+                        "Warning: Failed to set title for window {}: {}",
+                        window.name, e
+                    );
                 }
             }
         }
@@ -263,7 +272,7 @@ mod tests {
         // The result will vary depending on whether tmux is installed
         let available = is_available();
         // We can't assert a specific value, but we can verify it returns a bool
-        assert!(available == true || available == false);
+        assert!(available || !available);
     }
 
     #[test]
@@ -277,7 +286,7 @@ mod tests {
 
         if result.is_ok() {
             // If tmux is available, the session should not exist
-            assert_eq!(result.unwrap(), false);
+            assert!(!result.unwrap());
         } else {
             // If tmux is not available, we expect an error
             assert!(result.is_err());

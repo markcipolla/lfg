@@ -54,7 +54,10 @@ fn test_config_integration() {
     assert_eq!(loaded_config.windows[0].name, "editor");
     assert_eq!(loaded_config.windows[0].command, Some("nvim".to_string()));
     assert_eq!(loaded_config.windows[1].name, "server");
-    assert_eq!(loaded_config.windows[1].command, Some("npm start".to_string()));
+    assert_eq!(
+        loaded_config.windows[1].command,
+        Some("npm start".to_string())
+    );
     assert_eq!(loaded_config.windows[2].name, "shell");
     assert_eq!(loaded_config.windows[2].command, None);
 
@@ -84,7 +87,7 @@ fn test_worktree_struct_integration() {
     assert_eq!(cloned.branch, "main");
 
     // Test that worktrees can be stored in a vector
-    let worktrees = vec![worktree1, worktree2];
+    let worktrees = [worktree1, worktree2];
     assert_eq!(worktrees.len(), 2);
     assert_eq!(worktrees[0].name, "main");
     assert_eq!(worktrees[1].name, "feature");
@@ -98,7 +101,11 @@ fn test_config_default_values() {
     assert_eq!(default_config.windows.len(), 4);
 
     // Verify default window names
-    let window_names: Vec<&str> = default_config.windows.iter().map(|w| w.name.as_str()).collect();
+    let window_names: Vec<&str> = default_config
+        .windows
+        .iter()
+        .map(|w| w.name.as_str())
+        .collect();
     assert_eq!(window_names, vec!["rails", "tailwind", "omnara", "shell"]);
 
     // Verify commands
@@ -152,12 +159,10 @@ fn test_empty_config_uses_defaults() {
 fn test_config_with_special_characters() {
     // Test that config handles special characters in commands
     let config = config::Config {
-        windows: vec![
-            config::TmuxWindow {
-                name: "test".to_string(),
-                command: Some("echo 'hello \"world\"' && ls -la".to_string()),
-            },
-        ],
+        windows: vec![config::TmuxWindow {
+            name: "test".to_string(),
+            command: Some("echo 'hello \"world\"' && ls -la".to_string()),
+        }],
     };
 
     let toml_string = toml::to_string(&config).unwrap();
@@ -207,7 +212,10 @@ fn test_worktree_path_handling() {
     };
 
     // Verify path operations work
-    assert_eq!(worktree.path.to_str().unwrap(), "/Users/test/project-my-feature");
+    assert_eq!(
+        worktree.path.to_str().unwrap(),
+        "/Users/test/project-my-feature"
+    );
     assert!(worktree.path.to_string_lossy().contains("my-feature"));
 }
 
@@ -218,7 +226,7 @@ mod property_based_tests {
     #[test]
     fn test_config_windows_ordering_preserved() {
         // Test that window ordering is always preserved through serialization
-        let window_names = vec!["first", "second", "third", "fourth", "fifth"];
+        let window_names = ["first", "second", "third", "fourth", "fifth"];
 
         let config = config::Config {
             windows: window_names

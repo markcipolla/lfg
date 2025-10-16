@@ -17,17 +17,12 @@ pub struct Todo {
     pub worktree: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TodoStatus {
+    #[default]
     Pending,
     Done,
-}
-
-impl Default for TodoStatus {
-    fn default() -> Self {
-        TodoStatus::Pending
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,20 +80,20 @@ impl AppConfig {
         let config_path = Self::config_path()?;
 
         if config_path.exists() {
-            let contents = fs::read_to_string(&config_path)
-                .context("Failed to read lfg-config.yaml")?;
+            let contents =
+                fs::read_to_string(&config_path).context("Failed to read lfg-config.yaml")?;
 
             // Try to parse the config
             match serde_yaml::from_str::<Self>(&contents) {
                 Ok(config) => Ok(config),
                 Err(e) => {
-                    eprintln!("Warning: Failed to parse lfg-config.yaml: {}", e);
+                    eprintln!("Warning: Failed to parse lfg-config.yaml: {e}");
                     eprintln!("Creating backup and generating new default config...");
 
                     // Backup the old config
                     let backup_path = config_path.with_extension("yaml.backup");
                     if let Err(e) = fs::copy(&config_path, &backup_path) {
-                        eprintln!("Warning: Failed to create backup: {}", e);
+                        eprintln!("Warning: Failed to create backup: {e}");
                     } else {
                         eprintln!("Backed up old config to: {}", backup_path.display());
                     }
@@ -138,7 +133,10 @@ impl AppConfig {
     /// Mark a todo as done by worktree name
     pub fn mark_todo_done(&mut self, worktree_name: &str) {
         if let Some(todo) = self.todos.iter_mut().find(|t| {
-            t.worktree.as_ref().map(|w| w == worktree_name).unwrap_or(false)
+            t.worktree
+                .as_ref()
+                .map(|w| w == worktree_name)
+                .unwrap_or(false)
         }) {
             todo.status = TodoStatus::Done;
         }
@@ -184,8 +182,8 @@ impl Config {
         let config_path = Self::config_path()?;
 
         if config_path.exists() {
-            let contents = fs::read_to_string(&config_path)
-                .context("Failed to read config file")?;
+            let contents =
+                fs::read_to_string(&config_path).context("Failed to read config file")?;
             toml::from_str(&contents).context("Failed to parse config file")
         } else {
             // Create default config
@@ -199,8 +197,7 @@ impl Config {
     #[allow(dead_code)]
     pub fn load_from_path(path: &PathBuf) -> Result<Self> {
         if path.exists() {
-            let contents = fs::read_to_string(path)
-                .context("Failed to read config file")?;
+            let contents = fs::read_to_string(path).context("Failed to read config file")?;
             toml::from_str(&contents).context("Failed to parse config file")
         } else {
             Err(anyhow::anyhow!("Config file does not exist"))
@@ -268,10 +265,16 @@ mod tests {
         assert_eq!(windows[0].command, Some("bin/rails s".to_string()));
 
         assert_eq!(windows[1].name, "tailwind");
-        assert_eq!(windows[1].command, Some("bin/rails tailwind:watch".to_string()));
+        assert_eq!(
+            windows[1].command,
+            Some("bin/rails tailwind:watch".to_string())
+        );
 
         assert_eq!(windows[2].name, "omnara");
-        assert_eq!(windows[2].command, Some("omnara --dangerously-skip-permissions".to_string()));
+        assert_eq!(
+            windows[2].command,
+            Some("omnara --dangerously-skip-permissions".to_string())
+        );
 
         assert_eq!(windows[3].name, "shell");
         assert_eq!(windows[3].command, None);
@@ -458,12 +461,10 @@ windows = []
     #[test]
     fn test_config_clone() {
         let config = Config {
-            windows: vec![
-                TmuxWindow {
-                    name: "test".to_string(),
-                    command: None,
-                },
-            ],
+            windows: vec![TmuxWindow {
+                name: "test".to_string(),
+                command: None,
+            }],
         };
 
         let cloned = config.clone();
@@ -474,7 +475,7 @@ windows = []
     #[test]
     fn test_config_debug() {
         let config = Config::default();
-        let debug_str = format!("{:?}", config);
+        let debug_str = format!("{config:?}");
         assert!(debug_str.contains("Config"));
         assert!(debug_str.contains("windows"));
     }
