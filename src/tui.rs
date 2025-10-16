@@ -455,9 +455,7 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut A
                         use crossterm::event::{MouseButton, MouseEventKind};
                         if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                             // Handle list item clicks
-                            if let Some(clicked_index) =
-                                app.handle_click(mouse.column, mouse.row)
-                            {
+                            if let Some(clicked_index) = app.handle_click(mouse.column, mouse.row) {
                                 app.list_state.select(Some(clicked_index));
                             }
                             // Handle New button click
