@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone)]
@@ -90,7 +90,7 @@ pub fn find_worktree(name: &str) -> Result<Worktree> {
     worktrees
         .into_iter()
         .find(|wt| wt.name == name)
-        .ok_or_else(|| anyhow!("Worktree '{}' not found", name))
+        .ok_or_else(|| anyhow!("Worktree '{name}' not found"))
 }
 
 /// Create a new worktree
@@ -141,7 +141,7 @@ pub fn jump_to_worktree(name: &str) -> Result<()> {
 }
 
 /// Check if a worktree has uncommitted changes
-pub fn is_worktree_dirty(path: &PathBuf) -> Result<bool> {
+pub fn is_worktree_dirty(path: &Path) -> Result<bool> {
     let output = Command::new("git")
         .args(["-C", path.to_str().unwrap(), "status", "--porcelain"])
         .output()
@@ -159,7 +159,7 @@ pub fn is_worktree_dirty(path: &PathBuf) -> Result<bool> {
 }
 
 /// Delete a worktree
-pub fn delete_worktree(path: &PathBuf, force: bool) -> Result<()> {
+pub fn delete_worktree(path: &Path, force: bool) -> Result<()> {
     let mut cmd = Command::new("git");
     cmd.args(["worktree", "remove"]);
 
@@ -313,7 +313,7 @@ branch refs/heads/bugfix/fix-123
             branch: "main".to_string(),
         };
 
-        let debug_str = format!("{:?}", worktree);
+        let debug_str = format!("{worktree:?}");
         assert!(debug_str.contains("test"));
         assert!(debug_str.contains("main"));
     }

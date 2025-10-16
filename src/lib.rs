@@ -8,5 +8,5 @@ pub mod tmux;
 pub mod tui;
 
 // Re-export commonly used types for convenience
-pub use git::Worktree;
 pub use config::{Config, TmuxWindow};
+pub use git::Worktree;
