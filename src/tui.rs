@@ -238,6 +238,7 @@ impl App {
     fn confirm_delete(&mut self) -> Result<()> {
         if let Some(worktree) = &self.worktree_to_delete {
             let force = self.delete_is_dirty;
+            let branch_name = worktree.branch.clone();
 
             // Check if we're in a tmux session with the same name as the worktree
             let current_session = crate::tmux::get_current_session();
@@ -245,6 +246,11 @@ impl App {
 
             match git::delete_worktree(&worktree.path, force) {
                 Ok(_) => {
+                    // Delete the associated branch
+                    if let Err(e) = git::delete_branch(&branch_name, force) {
+                        eprintln!("Warning: Failed to delete branch '{}': {}", branch_name, e);
+                    }
+
                     // Mark todo as done
                     self.app_config.mark_todo_done(&worktree.name);
                     self.app_config.save()?;

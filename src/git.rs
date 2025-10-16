@@ -181,6 +181,31 @@ pub fn delete_worktree(path: &PathBuf, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// Delete a git branch
+pub fn delete_branch(branch_name: &str, force: bool) -> Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.arg("branch");
+
+    if force {
+        cmd.arg("-D");
+    } else {
+        cmd.arg("-d");
+    }
+
+    cmd.arg(branch_name);
+
+    let output = cmd.output().context("Failed to delete branch")?;
+
+    if !output.status.success() {
+        return Err(anyhow!(
+            "Failed to delete branch: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
