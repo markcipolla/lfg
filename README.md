@@ -1,6 +1,6 @@
 # LFG - Git Worktree Manager
 
-A Rust TUI (Terminal User Interface) application for managing git worktrees with integrated tmux session management.
+A Go TUI (Terminal User Interface) application built with Bubble Tea for managing git worktrees with integrated tmux session management and optional GitHub Projects integration.
 
 ## Features
 
@@ -16,15 +16,16 @@ A Rust TUI (Terminal User Interface) application for managing git worktrees with
 
 ## Installation
 
+Build from source:
+
 ```bash
-cargo install --path .
+go build -o lfg .
 ```
 
-Or build from source:
+Or install directly:
 
 ```bash
-cargo build --release
-# Binary will be at target/release/lfg
+go install github.com/markcipolla/lfg@latest
 ```
 
 ## Usage
@@ -139,19 +140,20 @@ This workflow helps you track what you're working on and maintain a history of c
 
 ## Requirements
 
-- Rust 1.70+
+- Go 1.20+
 - Git with worktree support
 - tmux (automatically checked at runtime)
+- gh CLI (optional, for GitHub Projects integration)
 
-## Comparison with Bash Function
+## Why Go + Bubble Tea?
 
-This tool replaces the `lfgw` bash function with a more robust solution:
+This was rewritten from Rust to Go with Bubble Tea because:
 
-- **TUI Interface**: Visual selection instead of memorizing worktree names
-- **Worktree Creation**: Create new worktrees without leaving the tool
-- **Configuration**: Persistent, editable config instead of hardcoded commands
-- **Error Handling**: Better error messages and validation
-- **Cross-platform**: Works on any platform with Rust support
+- **Charming UI**: Bubble Tea provides a delightful, smooth TUI experience
+- **Simpler**: Go's straightforward concurrency and error handling
+- **Fast builds**: Much faster compile times than Rust
+- **Great ecosystem**: Charm's suite of tools (Bubble Tea, Lipgloss, Bubbles) sparks joy
+- **Easy deployment**: Single binary, no runtime dependencies
 
 ## License
 
