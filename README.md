@@ -93,7 +93,7 @@ windows:
   - name: editor
     command: null
   - name: server
-    command: omnara --dangerously-skip-permissions
+    command: claude --dangerously-skip-permissions
   - name: shell
     command: null
 ```

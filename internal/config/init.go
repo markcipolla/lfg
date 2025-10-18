@@ -490,8 +490,8 @@ func (m *initModel) completeSetup(backend *StorageBackend) (tea.Model, tea.Cmd) 
 		StorageBackend: backend,
 		Todos:          []Todo{},
 		Windows: []TmuxWindow{
-			{Name: "editor", Command: nil},
-			{Name: "server", Command: stringPtr("omnara --dangerously-skip-permissions")},
+			{Name: "code", Command: nil},
+			{Name: "server", Command: stringPtr("claude --dangerously-skip-permissions")},
 			{Name: "shell", Command: nil},
 		},
 		configPath: m.configPath,

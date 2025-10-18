@@ -21,6 +21,8 @@ type Todo struct {
 	Description string     `yaml:"description"`
 	Status      TodoStatus `yaml:"status"`
 	Worktree    string     `yaml:"worktree,omitempty"`
+	GitHubBody  string     `yaml:"github_body,omitempty"`
+	GitHubURL   string     `yaml:"github_url,omitempty"`
 }
 
 type TmuxWindow struct {
@@ -60,6 +62,11 @@ func Load() (*Config, error) {
 		return runInitWizard(configPath, repoRoot)
 	}
 
+	return LoadFromPath(configPath)
+}
+
+// LoadFromPath loads the config from a specific path without running init wizard
+func LoadFromPath(configPath string) (*Config, error) {
 	// Load existing config
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -73,6 +80,11 @@ func Load() (*Config, error) {
 
 	cfg.configPath = configPath
 	return &cfg, nil
+}
+
+// GetConfigPath returns the path to the config file
+func (c *Config) GetConfigPath() string {
+	return c.configPath
 }
 
 // Save saves the config to disk

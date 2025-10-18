@@ -27,57 +27,169 @@ func CreateOrAttachSession(name, path string, cfg *config.Config) error {
 		return fmt.Errorf("tmux is not installed")
 	}
 
-	// If session exists, just attach
-	if SessionExists(name) {
-		return attachSession(name)
+	// Sanitize session name - tmux doesn't allow dots in session names
+	sessionName := sanitizeSessionName(name)
+
+	// If session exists, ensure windows exist and attach
+	if SessionExists(sessionName) {
+		if err := ensureWindows(sessionName, path, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to ensure windows: %v\n", err)
+		}
+		return attachSession(sessionName)
 	}
 
 	// Create new session
-	return createSession(name, path, cfg)
+	return createSession(sessionName, path, cfg)
+}
+
+// sanitizeSessionName converts characters that tmux doesn't allow in session names
+func sanitizeSessionName(name string) string {
+	// Replace dots with underscores (tmux converts dots to underscores)
+	return strings.ReplaceAll(name, ".", "_")
+}
+
+// ensureWindows checks if the session has the correct pane layout and recreates if needed
+func ensureWindows(sessionName, path string, cfg *config.Config) error {
+	// Check if the "main" window exists
+	cmd := exec.Command("tmux", "list-windows", "-t", sessionName, "-F", "#{window_name}")
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to list windows: %w", err)
+	}
+
+	hasMainWindow := false
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	for _, line := range lines {
+		if line == "main" {
+			hasMainWindow = true
+			break
+		}
+	}
+
+	// If main window doesn't exist, create the pane layout
+	if !hasMainWindow {
+		// Kill all windows first
+		for _, line := range lines {
+			if line != "" {
+				cmd = exec.Command("tmux", "kill-window", "-t", fmt.Sprintf("%s:%s", sessionName, line))
+				cmd.Run() // Ignore errors
+			}
+		}
+
+		// Create new window with pane layout
+		cmd = exec.Command("tmux", "new-window", "-t", sessionName, "-n", "main", "-c", path)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to create main window: %w", err)
+		}
+
+		// Create the pane layout
+		return createPaneLayout(sessionName, path, cfg)
+	}
+
+	return nil
 }
 
 func createSession(name, path string, cfg *config.Config) error {
-	// Create initial session (detached)
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", path)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to create session: %w", err)
+	// Verify path exists
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("path does not exist: %s", path)
 	}
 
-	// Create configured windows
-	for i, window := range cfg.Windows {
-		windowName := window.Name
-		windowPath := path
+	// Create initial session (detached) with a single window
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", path)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create session: %s (output: %s)", err, string(output))
+	}
 
-		if i == 0 {
-			// Rename first window instead of creating new one
-			cmd = exec.Command("tmux", "rename-window", "-t", fmt.Sprintf("%s:0", name), windowName)
-		} else {
-			// Create new window
-			cmd = exec.Command("tmux", "new-window", "-t", name, "-n", windowName, "-c", windowPath)
-		}
+	// Rename the window to "main"
+	cmd = exec.Command("tmux", "rename-window", "-t", fmt.Sprintf("%s:0", name), "main")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to rename window: %w", err)
+	}
 
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to create window %s: %w", windowName, err)
-		}
+	return createPaneLayout(name, path, cfg)
+}
 
-		// Run command in window if specified
-		if window.Command != nil && *window.Command != "" {
-			target := fmt.Sprintf("%s:%s", name, windowName)
-			cmd = exec.Command("tmux", "send-keys", "-t", target, *window.Command, "Enter")
+func createPaneLayout(name, path string, cfg *config.Config) error {
+	target := fmt.Sprintf("%s:main", name)
+
+	// Create top pane for description (15% of screen)
+	// Split horizontally to create top pane
+	cmd := exec.Command("tmux", "split-window", "-t", target, "-v", "-p", "85", "-c", path)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to create top pane: %w", err)
+	}
+
+	// The original pane is now at index 0 (top), new pane at index 1 (bottom)
+	// Select the bottom pane and split it for the configured panes
+	bottomPane := fmt.Sprintf("%s.1", target)
+
+	// Create panes based on configuration
+	// We'll create a layout: top description pane, then split bottom into configured panes
+	if len(cfg.Windows) > 0 {
+		// First configured pane already exists (bottom pane)
+		// Run command if specified
+		if cfg.Windows[0].Command != nil && *cfg.Windows[0].Command != "" {
+			cmd = exec.Command("tmux", "send-keys", "-t", bottomPane, *cfg.Windows[0].Command, "Enter")
 			if err := cmd.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to run command in window %s: %v\n", windowName, err)
+				fmt.Fprintf(os.Stderr, "Warning: failed to run command in pane 0: %v\n", err)
+			}
+		}
+
+		// Create additional panes by splitting
+		for i := 1; i < len(cfg.Windows); i++ {
+			// Split the current layout to add more panes
+			// Use vertical splits for additional panes
+			percentage := 100 / (len(cfg.Windows) - i + 1)
+			cmd = exec.Command("tmux", "split-window", "-t", bottomPane, "-h", "-p", fmt.Sprintf("%d", percentage), "-c", path)
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to create pane %d: %w", i, err)
+			}
+
+			// Run command in the new pane if specified
+			if cfg.Windows[i].Command != nil && *cfg.Windows[i].Command != "" {
+				paneTarget := fmt.Sprintf("%s.%d", target, i+1)
+				cmd = exec.Command("tmux", "send-keys", "-t", paneTarget, *cfg.Windows[i].Command, "Enter")
+				if err := cmd.Run(); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to run command in pane %d: %v\n", i, err)
+				}
 			}
 		}
 	}
 
-	// Select first window
-	cmd = exec.Command("tmux", "select-window", "-t", fmt.Sprintf("%s:0", name))
+	// Setup the description pane (pane 0)
+	descPane := fmt.Sprintf("%s.0", target)
+	if err := setupDescriptionPane(descPane, name, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to setup description pane: %v\n", err)
+	}
+
+	// Select the first work pane (pane 1 - first configured pane)
+	cmd = exec.Command("tmux", "select-pane", "-t", fmt.Sprintf("%s.1", target))
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to select first window: %w", err)
+		fmt.Fprintf(os.Stderr, "Warning: failed to select work pane: %v\n", err)
 	}
 
 	// Attach to session
 	return attachSession(name)
+}
+
+func setupDescriptionPane(pane, worktreeName string, cfg *config.Config) error {
+	// Find lfg binary
+	lfgPath := "lfg"
+
+	// Try to find the absolute path
+	if absPath, err := exec.LookPath("lfg"); err == nil {
+		lfgPath = absPath
+	}
+
+	// Get the config path
+	configPath := cfg.GetConfigPath()
+
+	// Launch the viewer TUI in the pane using lfg --view with config path
+	cmd := exec.Command("tmux", "send-keys", "-t", pane,
+		fmt.Sprintf("%s --view --config %s %s", lfgPath, configPath, worktreeName), "Enter")
+	return cmd.Run()
 }
 
 func attachSession(name string) error {

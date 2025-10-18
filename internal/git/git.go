@@ -54,15 +54,89 @@ func GetWorktreeName(path string) string {
 	return filepath.Base(path)
 }
 
-// CreateWorktree creates a new git worktree
+// GetCurrentWorktree returns the name of the current worktree, or empty string if not in a worktree
+func GetCurrentWorktree() (string, error) {
+	// Get the current directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	// List all worktrees
+	worktrees, err := ListWorktrees()
+	if err != nil {
+		return "", err
+	}
+
+	// Check if current directory is in any worktree
+	for _, wt := range worktrees {
+		// Check if cwd is the worktree path or a subdirectory of it
+		if cwd == wt.Path || strings.HasPrefix(cwd, wt.Path+string(filepath.Separator)) {
+			return GetWorktreeName(wt.Path), nil
+		}
+	}
+
+	return "", nil
+}
+
+// CreateWorktree creates a new git worktree in the parent directory of the repo root
 func CreateWorktree(name string) error {
+	// Get the repository root
+	rootCmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	rootOutput, err := rootCmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to get repo root: %w", err)
+	}
+	repoRoot := strings.TrimSpace(string(rootOutput))
+
+	// Get the parent directory
+	parentDir := filepath.Dir(repoRoot)
+
+	// Create worktree path in parent directory
+	worktreePath := filepath.Join(parentDir, name)
+
 	// Create branch and worktree
-	cmd := exec.Command("git", "worktree", "add", "-b", name, name)
+	cmd := exec.Command("git", "worktree", "add", "-b", name, worktreePath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create worktree: %s", string(output))
 	}
 	return nil
+}
+
+// IsBranchMerged checks if a branch has been merged into the default branch
+func IsBranchMerged(branchName string) (bool, error) {
+	// Get the default branch
+	cmd := exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD")
+	output, err := cmd.Output()
+	if err != nil {
+		// Fallback to master/main
+		cmd = exec.Command("git", "rev-parse", "--verify", "origin/main")
+		if cmd.Run() == nil {
+			output = []byte("refs/remotes/origin/main")
+		} else {
+			output = []byte("refs/remotes/origin/master")
+		}
+	}
+	defaultBranch := strings.TrimSpace(strings.TrimPrefix(string(output), "refs/remotes/"))
+
+	// Check if branch is merged
+	cmd = exec.Command("git", "branch", "-r", "--merged", defaultBranch)
+	output, err = cmd.Output()
+	if err != nil {
+		return false, err
+	}
+
+	// Look for the branch in the merged list
+	mergedBranches := strings.Split(string(output), "\n")
+	for _, branch := range mergedBranches {
+		branch = strings.TrimSpace(branch)
+		if strings.HasSuffix(branch, "/"+branchName) {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // DeleteWorktree deletes a git worktree

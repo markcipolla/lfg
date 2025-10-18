@@ -14,6 +14,19 @@ type Project struct {
 	Title  string `json:"title"`
 }
 
+type ProjectItem struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Status  string `json:"status"`
+	Body    string `json:"body"`
+	Content struct {
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		Body   string `json:"body"`
+		URL    string `json:"url"`
+	} `json:"content"`
+}
+
 type RepoInfo struct {
 	Owner string
 	Name  string
@@ -224,6 +237,377 @@ func runGraphQL(query string) ([]byte, error) {
 	}
 
 	return output, nil
+}
+
+// ListProjectItems fetches all items from a GitHub Project
+func ListProjectItems(owner, repo string, projectNumber int) ([]ProjectItem, error) {
+	// First, get the project ID
+	projectQuery := fmt.Sprintf(`
+		query {
+			repository(owner: "%s", name: "%s") {
+				projectsV2(first: 10) {
+					nodes {
+						id
+						number
+						title
+					}
+				}
+			}
+		}
+	`, owner, repo)
+
+	output, err := runGraphQL(projectQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	var projectResult struct {
+		Data struct {
+			Repository struct {
+				ProjectsV2 struct {
+					Nodes []Project `json:"nodes"`
+				} `json:"projectsV2"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(output, &projectResult); err != nil {
+		return nil, fmt.Errorf("failed to parse projects: %w", err)
+	}
+
+	// Find the project with the matching number
+	var projectID string
+	for _, project := range projectResult.Data.Repository.ProjectsV2.Nodes {
+		if project.Number == projectNumber {
+			projectID = project.ID
+			break
+		}
+	}
+
+	if projectID == "" {
+		return nil, fmt.Errorf("project #%d not found", projectNumber)
+	}
+
+	// Get the project items with status field
+	itemsQuery := fmt.Sprintf(`
+		query {
+			node(id: "%s") {
+				... on ProjectV2 {
+					items(first: 100) {
+						nodes {
+							id
+							fieldValues(first: 10) {
+								nodes {
+									... on ProjectV2ItemFieldSingleSelectValue {
+										name
+										field {
+											... on ProjectV2SingleSelectField {
+												name
+											}
+										}
+									}
+									... on ProjectV2ItemFieldTextValue {
+										text
+										field {
+											... on ProjectV2FieldCommon {
+												name
+											}
+										}
+									}
+								}
+							}
+							content {
+								... on Issue {
+									number
+									title
+									body
+									url
+								}
+								... on DraftIssue {
+									title
+									body
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	`, projectID)
+
+	output, err = runGraphQL(itemsQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	var itemsResult struct {
+		Data struct {
+			Node struct {
+				Items struct {
+					Nodes []struct {
+						ID          string `json:"id"`
+						FieldValues struct {
+							Nodes []struct {
+								Name  string `json:"name"`
+								Text  string `json:"text"`
+								Field struct {
+									Name string `json:"name"`
+								} `json:"field"`
+							} `json:"nodes"`
+						} `json:"fieldValues"`
+						Content struct {
+							Number int    `json:"number"`
+							Title  string `json:"title"`
+							Body   string `json:"body"`
+							URL    string `json:"url"`
+						} `json:"content"`
+					} `json:"nodes"`
+				} `json:"items"`
+			} `json:"node"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(output, &itemsResult); err != nil {
+		return nil, fmt.Errorf("failed to parse project items: %w", err)
+	}
+
+	// Convert to ProjectItem
+	var items []ProjectItem
+	for _, node := range itemsResult.Data.Node.Items.Nodes {
+		item := ProjectItem{
+			ID:      node.ID,
+			Title:   node.Content.Title,
+			Content: node.Content,
+		}
+
+		// Extract status from field values
+		for _, fv := range node.FieldValues.Nodes {
+			if fv.Field.Name == "Status" {
+				item.Status = fv.Name
+				break
+			}
+		}
+
+		items = append(items, item)
+	}
+
+	return items, nil
+}
+
+// CreateProjectItem creates a new item in a GitHub Project
+func CreateProjectItem(owner, repo string, projectNumber int, title string) (*ProjectItem, error) {
+	// First, get the project ID
+	projectQuery := fmt.Sprintf(`
+		query {
+			repository(owner: "%s", name: "%s") {
+				projectsV2(first: 10) {
+					nodes {
+						id
+						number
+					}
+				}
+			}
+		}
+	`, owner, repo)
+
+	output, err := runGraphQL(projectQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	var projectResult struct {
+		Data struct {
+			Repository struct {
+				ProjectsV2 struct {
+					Nodes []struct {
+						ID     string `json:"id"`
+						Number int    `json:"number"`
+					} `json:"nodes"`
+				} `json:"projectsV2"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(output, &projectResult); err != nil {
+		return nil, fmt.Errorf("failed to parse projects: %w", err)
+	}
+
+	var projectID string
+	for _, project := range projectResult.Data.Repository.ProjectsV2.Nodes {
+		if project.Number == projectNumber {
+			projectID = project.ID
+			break
+		}
+	}
+
+	if projectID == "" {
+		return nil, fmt.Errorf("project #%d not found", projectNumber)
+	}
+
+	// Create a draft issue in the project
+	mutation := fmt.Sprintf(`
+		mutation {
+			addProjectV2DraftIssue(input: {
+				projectId: "%s"
+				title: "%s"
+			}) {
+				projectItem {
+					id
+					content {
+						... on DraftIssue {
+							title
+						}
+					}
+				}
+			}
+		}
+	`, projectID, escapeString(title))
+
+	output, err = runGraphQL(mutation)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create project item: %w", err)
+	}
+
+	var createResult struct {
+		Data struct {
+			AddProjectV2DraftIssue struct {
+				ProjectItem struct {
+					ID      string `json:"id"`
+					Content struct {
+						Title string `json:"title"`
+					} `json:"content"`
+				} `json:"projectItem"`
+			} `json:"addProjectV2DraftIssue"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(output, &createResult); err != nil {
+		return nil, fmt.Errorf("failed to parse project item creation: %w", err)
+	}
+
+	return &ProjectItem{
+		ID:    createResult.Data.AddProjectV2DraftIssue.ProjectItem.ID,
+		Title: createResult.Data.AddProjectV2DraftIssue.ProjectItem.Content.Title,
+	}, nil
+}
+
+// UpdateProjectItemStatus updates the status of a project item
+func UpdateProjectItemStatus(owner, repo string, projectNumber int, itemID string, status string) error {
+	// First, get the project ID and status field ID
+	projectQuery := fmt.Sprintf(`
+		query {
+			repository(owner: "%s", name: "%s") {
+				projectsV2(first: 10) {
+					nodes {
+						id
+						number
+						fields(first: 20) {
+							nodes {
+								... on ProjectV2SingleSelectField {
+									id
+									name
+									options {
+										id
+										name
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	`, owner, repo)
+
+	output, err := runGraphQL(projectQuery)
+	if err != nil {
+		return err
+	}
+
+	var projectResult struct {
+		Data struct {
+			Repository struct {
+				ProjectsV2 struct {
+					Nodes []struct {
+						ID     string `json:"id"`
+						Number int    `json:"number"`
+						Fields struct {
+							Nodes []struct {
+								ID      string `json:"id"`
+								Name    string `json:"name"`
+								Options []struct {
+									ID   string `json:"id"`
+									Name string `json:"name"`
+								} `json:"options"`
+							} `json:"nodes"`
+						} `json:"fields"`
+					} `json:"nodes"`
+				} `json:"projectsV2"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(output, &projectResult); err != nil {
+		return fmt.Errorf("failed to parse projects: %w", err)
+	}
+
+	// Find the project and status field
+	var projectID, statusFieldID, statusOptionID string
+	for _, project := range projectResult.Data.Repository.ProjectsV2.Nodes {
+		if project.Number == projectNumber {
+			projectID = project.ID
+			// Find the Status field
+			for _, field := range project.Fields.Nodes {
+				if field.Name == "Status" {
+					statusFieldID = field.ID
+					// Find the option matching the desired status
+					for _, option := range field.Options {
+						if option.Name == status {
+							statusOptionID = option.ID
+							break
+						}
+					}
+					break
+				}
+			}
+			break
+		}
+	}
+
+	if projectID == "" {
+		return fmt.Errorf("project #%d not found", projectNumber)
+	}
+	if statusFieldID == "" {
+		return fmt.Errorf("Status field not found in project")
+	}
+	if statusOptionID == "" {
+		return fmt.Errorf("status option '%s' not found", status)
+	}
+
+	// Update the item status
+	mutation := fmt.Sprintf(`
+		mutation {
+			updateProjectV2ItemFieldValue(input: {
+				projectId: "%s"
+				itemId: "%s"
+				fieldId: "%s"
+				value: {
+					singleSelectOptionId: "%s"
+				}
+			}) {
+				projectV2Item {
+					id
+				}
+			}
+		}
+	`, projectID, itemID, statusFieldID, statusOptionID)
+
+	_, err = runGraphQL(mutation)
+	if err != nil {
+		return fmt.Errorf("failed to update item status: %w", err)
+	}
+
+	return nil
 }
 
 func escapeString(s string) string {
