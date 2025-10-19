@@ -54,6 +54,22 @@ func GetWorktreeName(path string) string {
 	return filepath.Base(path)
 }
 
+// GetWorktreePath returns the full path for a worktree by name
+func GetWorktreePath(name string) (string, error) {
+	worktrees, err := ListWorktrees()
+	if err != nil {
+		return "", err
+	}
+
+	for _, wt := range worktrees {
+		if GetWorktreeName(wt.Path) == name {
+			return wt.Path, nil
+		}
+	}
+
+	return "", fmt.Errorf("worktree %q not found", name)
+}
+
 // GetCurrentWorktree returns the name of the current worktree, or empty string if not in a worktree
 func GetCurrentWorktree() (string, error) {
 	// Get the current directory

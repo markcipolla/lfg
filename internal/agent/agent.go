@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/markcipolla/lfg/internal/config"
+	"github.com/markcipolla/lfg/internal/git"
 	"github.com/markcipolla/lfg/internal/github"
 )
 
@@ -49,8 +50,7 @@ type ContentBlock struct {
 type conversationMonitor struct {
 	cfg          *config.Config
 	issueNumber  int
-	projectName  string
-	sessionID    string
+	worktreePath string // Full path to the worktree directory
 	lastPosition int64
 	stopChan     chan bool
 }
@@ -85,11 +85,19 @@ func Run(worktreeName string, cfg *config.Config) error {
 		ctx = ""
 	}
 
+	// Get the worktree path
+	worktreePath, err := git.GetWorktreePath(worktreeName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to get worktree path: %v\n", err)
+		return runClaudeCode(ctx, nil)
+	}
+
 	// Create conversation monitor
 	monitor := &conversationMonitor{
-		cfg:         cfg,
-		issueNumber: issueNumber,
-		stopChan:    make(chan bool),
+		cfg:          cfg,
+		issueNumber:  issueNumber,
+		worktreePath: worktreePath,
+		stopChan:     make(chan bool),
 	}
 
 	// Run Claude Code with context and monitor
@@ -160,15 +168,9 @@ func (m *conversationMonitor) findLatestSession() (string, error) {
 		return "", err
 	}
 
-	// Get current working directory and convert to Claude's project name format
+	// Convert worktree path to Claude's project name format
 	// Claude replaces slashes with hyphens: /Users/foo/bar -> -Users-foo-bar
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-
-	// Convert /Users/foo/bar to -Users-foo-bar
-	projectName := strings.ReplaceAll(cwd, "/", "-")
+	projectName := strings.ReplaceAll(m.worktreePath, "/", "-")
 
 	projectDir := filepath.Join(homeDir, ".claude", "projects", projectName)
 
