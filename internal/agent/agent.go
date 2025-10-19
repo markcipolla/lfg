@@ -48,11 +48,13 @@ type ContentBlock struct {
 
 // conversationMonitor monitors the Claude JSONL log and posts to GitHub
 type conversationMonitor struct {
-	cfg          *config.Config
-	issueNumber  int
-	worktreePath string // Full path to the worktree directory
-	lastPosition int64
-	stopChan     chan bool
+	cfg               *config.Config
+	issueNumber       int
+	worktreePath      string // Full path to the worktree directory
+	lastPosition      int64
+	lastCommentID     int    // Track last processed GitHub comment
+	stopChan          chan bool
+	tmuxPane          string // Tmux pane target for sending input
 }
 
 // Run starts the agent wrapper for a given worktree
@@ -92,12 +94,28 @@ func Run(worktreeName string, cfg *config.Config) error {
 		return runClaudeCode(ctx, nil)
 	}
 
+	// Get current tmux pane for sending input
+	tmuxPane := os.Getenv("TMUX_PANE")
+
+	// Get the last comment ID to avoid reprocessing old comments
+	comments, err := github.GetIssueComments(
+		cfg.StorageBackend.Owner,
+		cfg.StorageBackend.Repo,
+		issueNumber,
+	)
+	var lastCommentID int
+	if err == nil && len(comments) > 0 {
+		lastCommentID = comments[len(comments)-1].ID
+	}
+
 	// Create conversation monitor
 	monitor := &conversationMonitor{
-		cfg:          cfg,
-		issueNumber:  issueNumber,
-		worktreePath: worktreePath,
-		stopChan:     make(chan bool),
+		cfg:           cfg,
+		issueNumber:   issueNumber,
+		worktreePath:  worktreePath,
+		lastCommentID: lastCommentID,
+		tmuxPane:      tmuxPane,
+		stopChan:      make(chan bool),
 	}
 
 	// Run Claude Code with context and monitor
@@ -121,8 +139,10 @@ func runClaudeCode(context string, monitor *conversationMonitor) error {
 
 	// If we have a monitor, start it in the background
 	if monitor != nil {
-		// Start monitoring in a goroutine
+		// Start JSONL monitoring in a goroutine
 		go monitor.start()
+		// Start GitHub comment polling in a goroutine
+		go monitor.pollGitHubComments()
 		// Ensure we stop monitoring when Claude exits
 		defer monitor.stop()
 	}
@@ -342,6 +362,71 @@ func loadContextFromIssue(cfg *config.Config, issueNumber int) (string, error) {
 
 // TODO: postMessageToGitHub - implement manual conversation saving
 // For now, users can manually add comments to issues
+
+// pollGitHubComments polls GitHub for new comments and sends them to Claude
+func (m *conversationMonitor) pollGitHubComments() {
+	// Only poll if we have a tmux pane to send to
+	if m.tmuxPane == "" {
+		return
+	}
+
+	// Poll every 5 seconds
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopChan:
+			return
+		case <-ticker.C:
+			comments, err := github.GetIssueComments(
+				m.cfg.StorageBackend.Owner,
+				m.cfg.StorageBackend.Repo,
+				m.issueNumber,
+			)
+			if err != nil {
+				continue
+			}
+
+			// Process new comments
+			for _, comment := range comments {
+				// Skip if we've already processed this comment
+				if comment.ID <= m.lastCommentID {
+					continue
+				}
+
+				// Skip comments from Claude (our bot)
+				if strings.HasPrefix(comment.Body, "🤖 **Claude:**") {
+					m.lastCommentID = comment.ID
+					continue
+				}
+
+				// Skip comments from user (they're typing directly)
+				if strings.HasPrefix(comment.Body, "**User:**") {
+					m.lastCommentID = comment.ID
+					continue
+				}
+
+				// This is a new comment from someone else - send to Claude
+				m.sendToTmux(comment.Body)
+				m.lastCommentID = comment.ID
+			}
+		}
+	}
+}
+
+// sendToTmux sends text to the tmux pane as input
+func (m *conversationMonitor) sendToTmux(text string) {
+	if m.tmuxPane == "" {
+		return
+	}
+
+	// Use tmux send-keys to inject the text
+	cmd := exec.Command("tmux", "send-keys", "-t", m.tmuxPane, text, "Enter")
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to send to tmux: %v\n", err)
+	}
+}
 
 // extractIssueNumber extracts the issue number from a GitHub URL
 // e.g., "https://github.com/owner/repo/issues/123" -> 123
