@@ -56,24 +56,24 @@ func sanitizeSessionName(name string) string {
 
 // ensureWindows checks if the session has the correct pane layout and recreates if needed
 func ensureWindows(sessionName, worktreeName, path string, cfg *config.Config) error {
-	// Check if the "main" window exists
+	// Check if a window with the worktree name exists
 	cmd := exec.Command("tmux", "list-windows", "-t", sessionName, "-F", "#{window_name}")
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to list windows: %w", err)
 	}
 
-	hasMainWindow := false
+	hasWorktreeWindow := false
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	for _, line := range lines {
-		if line == "main" {
-			hasMainWindow = true
+		if line == worktreeName {
+			hasWorktreeWindow = true
 			break
 		}
 	}
 
-	// If main window doesn't exist, create the pane layout
-	if !hasMainWindow {
+	// If worktree window doesn't exist, create the pane layout
+	if !hasWorktreeWindow {
 		// Kill all windows first
 		for _, line := range lines {
 			if line != "" {
@@ -82,10 +82,10 @@ func ensureWindows(sessionName, worktreeName, path string, cfg *config.Config) e
 			}
 		}
 
-		// Create new window with pane layout
-		cmd = exec.Command("tmux", "new-window", "-t", sessionName, "-n", "main", "-c", path)
+		// Create new window with pane layout, named with the worktree name
+		cmd = exec.Command("tmux", "new-window", "-t", sessionName, "-n", worktreeName, "-c", path)
 		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to create main window: %w", err)
+			return fmt.Errorf("failed to create worktree window: %w", err)
 		}
 
 		// Create the pane layout
@@ -108,8 +108,8 @@ func createSession(sessionName, worktreeName, path string, cfg *config.Config) e
 		return fmt.Errorf("failed to create session: %s (output: %s)", err, string(output))
 	}
 
-	// Rename the window to "main"
-	cmd = exec.Command("tmux", "rename-window", "-t", fmt.Sprintf("%s:0", sessionName), "main")
+	// Rename the window to show the worktree name
+	cmd = exec.Command("tmux", "rename-window", "-t", fmt.Sprintf("%s:0", sessionName), worktreeName)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to rename window: %w", err)
 	}
@@ -124,7 +124,8 @@ func createSession(sessionName, worktreeName, path string, cfg *config.Config) e
 }
 
 func createPaneLayout(sessionName, worktreeName, path string, cfg *config.Config) error {
-	target := fmt.Sprintf("%s:main", sessionName)
+	// Use worktree name as the window name
+	target := fmt.Sprintf("%s:%s", sessionName, worktreeName)
 
 	// Get layout (handles backward compatibility with old Windows format)
 	layout := cfg.GetLayout()
