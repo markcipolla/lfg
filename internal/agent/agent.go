@@ -169,8 +169,10 @@ func (m *conversationMonitor) findLatestSession() (string, error) {
 	}
 
 	// Convert worktree path to Claude's project name format
-	// Claude replaces slashes with hyphens: /Users/foo/bar -> -Users-foo-bar
+	// Claude replaces slashes and dots with hyphens:
+	// /Users/foo/bar.baz -> -Users-foo-bar-baz
 	projectName := strings.ReplaceAll(m.worktreePath, "/", "-")
+	projectName = strings.ReplaceAll(projectName, ".", "-")
 
 	projectDir := filepath.Join(homeDir, ".claude", "projects", projectName)
 
