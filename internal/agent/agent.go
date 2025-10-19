@@ -216,8 +216,6 @@ func (m *conversationMonitor) findLatestSession() (string, error) {
 
 // monitorLogFile tails the JSONL log file and processes entries
 func (m *conversationMonitor) monitorLogFile(logPath string) {
-	fmt.Fprintf(os.Stderr, "[DEBUG] Starting monitoring at position %d\n", m.lastPosition)
-
 	for {
 		select {
 		case <-m.stopChan:
@@ -236,7 +234,6 @@ func (m *conversationMonitor) monitorLogFile(logPath string) {
 			reader := bufio.NewReader(file)
 
 			// Read all available lines
-			linesRead := 0
 			for {
 				line, err := reader.ReadString('\n')
 				if err != nil {
@@ -244,16 +241,11 @@ func (m *conversationMonitor) monitorLogFile(logPath string) {
 					break
 				}
 
-				linesRead++
 				m.lastPosition += int64(len(line))
 				m.processLogEntry(line)
 			}
 
 			file.Close()
-
-			if linesRead > 0 {
-				fmt.Fprintf(os.Stderr, "[DEBUG] Read %d new lines\n", linesRead)
-			}
 
 			// Wait before checking for more data
 			time.Sleep(500 * time.Millisecond)
@@ -263,15 +255,10 @@ func (m *conversationMonitor) monitorLogFile(logPath string) {
 
 // processLogEntry parses and processes a single JSONL log entry
 func (m *conversationMonitor) processLogEntry(line string) {
-	fmt.Fprintf(os.Stderr, "[DEBUG] Processing log entry\n")
-
 	var entry JSONLEntry
 	if err := json.Unmarshal([]byte(line), &entry); err != nil {
-		fmt.Fprintf(os.Stderr, "[DEBUG] Failed to parse JSON: %v\n", err)
 		return // Skip invalid JSON
 	}
-
-	fmt.Fprintf(os.Stderr, "[DEBUG] Entry type: %s\n", entry.Type)
 
 	// Only process user and assistant messages
 	if entry.Type != "user" && entry.Type != "assistant" {
@@ -283,7 +270,6 @@ func (m *conversationMonitor) processLogEntry(line string) {
 
 	// Try parsing as a string first (user messages)
 	if err := json.Unmarshal(entry.Message.Content, &text); err == nil && text != "" {
-		fmt.Fprintf(os.Stderr, "[DEBUG] Parsed as string: %s\n", text)
 		// Successfully parsed as string
 	} else {
 		// Try parsing as array of content blocks (assistant messages)
@@ -296,14 +282,10 @@ func (m *conversationMonitor) processLogEntry(line string) {
 				}
 			}
 			text = strings.Join(textParts, "\n")
-			fmt.Fprintf(os.Stderr, "[DEBUG] Parsed as array: %s\n", text)
-		} else {
-			fmt.Fprintf(os.Stderr, "[DEBUG] Failed to parse content: %v\n", err)
 		}
 	}
 
 	if text == "" {
-		fmt.Fprintf(os.Stderr, "[DEBUG] No text content found\n")
 		return // No text content to post
 	}
 
@@ -315,8 +297,6 @@ func (m *conversationMonitor) processLogEntry(line string) {
 		body = fmt.Sprintf("🤖 **Claude:** %s", text)
 	}
 
-	fmt.Fprintf(os.Stderr, "[DEBUG] Posting to GitHub issue %d: %s\n", m.issueNumber, body)
-
 	err := github.CreateIssueComment(
 		m.cfg.StorageBackend.Owner,
 		m.cfg.StorageBackend.Repo,
@@ -325,8 +305,6 @@ func (m *conversationMonitor) processLogEntry(line string) {
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to post comment to GitHub: %v\n", err)
-	} else {
-		fmt.Fprintf(os.Stderr, "[DEBUG] Successfully posted to GitHub\n")
 	}
 }
 
