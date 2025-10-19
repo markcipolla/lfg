@@ -36,8 +36,8 @@ type JSONLEntry struct {
 
 // MessageContent represents the message content in the JSONL entry
 type MessageContent struct {
-	Role    string           `json:"role"`    // "user" or "assistant"
-	Content []ContentBlock   `json:"content"` // Content blocks
+	Role    string          `json:"role"`    // "user" or "assistant"
+	Content json.RawMessage `json:"content"` // Can be string (user) or array (assistant)
 }
 
 // ContentBlock represents a content block (text, tool use, etc.)
@@ -261,19 +261,29 @@ func (m *conversationMonitor) processLogEntry(line string) {
 		return
 	}
 
-	// Extract text content from message.content blocks
-	var textParts []string
-	for _, block := range entry.Message.Content {
-		if block.Type == "text" && block.Text != "" {
-			textParts = append(textParts, block.Text)
+	// Extract text content - handle both string (user) and array (assistant) formats
+	var text string
+
+	// Try parsing as a string first (user messages)
+	if err := json.Unmarshal(entry.Message.Content, &text); err == nil && text != "" {
+		// Successfully parsed as string
+	} else {
+		// Try parsing as array of content blocks (assistant messages)
+		var blocks []ContentBlock
+		if err := json.Unmarshal(entry.Message.Content, &blocks); err == nil {
+			var textParts []string
+			for _, block := range blocks {
+				if block.Type == "text" && block.Text != "" {
+					textParts = append(textParts, block.Text)
+				}
+			}
+			text = strings.Join(textParts, "\n")
 		}
 	}
 
-	if len(textParts) == 0 {
+	if text == "" {
 		return // No text content to post
 	}
-
-	text := strings.Join(textParts, "\n")
 
 	// Post to GitHub
 	var body string
