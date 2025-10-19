@@ -157,6 +157,19 @@ func IsBranchMerged(branchName string) (bool, error) {
 
 // DeleteWorktree deletes a git worktree
 func DeleteWorktree(name string, deleteBranch bool) error {
+	// Get the worktree path
+	worktreePath, err := GetWorktreePath(name)
+	if err != nil {
+		// Worktree doesn't exist in git, just try to delete the branch
+		if deleteBranch {
+			cmd := exec.Command("git", "branch", "-D", name)
+			if err := cmd.Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to delete branch %s\n", name)
+			}
+		}
+		return nil
+	}
+
 	// Check if we're currently in the worktree being deleted
 	currentWorktree, err := GetCurrentWorktree()
 	if err == nil && currentWorktree == name {
@@ -170,8 +183,8 @@ func DeleteWorktree(name string, deleteBranch bool) error {
 		}
 	}
 
-	// Remove worktree
-	cmd := exec.Command("git", "worktree", "remove", name)
+	// Remove worktree using the full path
+	cmd := exec.Command("git", "worktree", "remove", worktreePath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to remove worktree: %s", string(output))
