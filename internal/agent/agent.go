@@ -421,10 +421,18 @@ func (m *conversationMonitor) sendToTmux(text string) {
 		return
 	}
 
-	// Use tmux send-keys to inject the text
-	cmd := exec.Command("tmux", "send-keys", "-t", m.tmuxPane, text, "Enter")
+	// Use tmux send-keys to inject the text, then press Enter
+	// We need to send Enter as a literal key, not the string "Enter"
+	cmd := exec.Command("tmux", "send-keys", "-t", m.tmuxPane, "-l", text)
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to send to tmux: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: failed to send text to tmux: %v\n", err)
+		return
+	}
+
+	// Send the Enter key separately
+	cmd = exec.Command("tmux", "send-keys", "-t", m.tmuxPane, "Enter")
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to send Enter to tmux: %v\n", err)
 	}
 }
 
