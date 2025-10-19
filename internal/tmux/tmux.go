@@ -109,6 +109,12 @@ func createSession(sessionName, worktreeName, path string, cfg *config.Config) e
 		return fmt.Errorf("failed to rename window: %w", err)
 	}
 
+	// Enable mouse mode for this session
+	cmd = exec.Command("tmux", "set-option", "-t", sessionName, "mouse", "on")
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to enable mouse mode: %v\n", err)
+	}
+
 	return createPaneLayout(sessionName, worktreeName, path, cfg)
 }
 
