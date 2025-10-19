@@ -153,7 +153,7 @@ func (m *conversationMonitor) findLatestSession() (string, error) {
 	}
 
 	// Get current working directory and convert to Claude's project name format
-	// Claude replaces slashes with hyphens and removes the leading slash
+	// Claude replaces slashes with hyphens: /Users/foo/bar -> -Users-foo-bar
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
@@ -161,9 +161,6 @@ func (m *conversationMonitor) findLatestSession() (string, error) {
 
 	// Convert /Users/foo/bar to -Users-foo-bar
 	projectName := strings.ReplaceAll(cwd, "/", "-")
-	if strings.HasPrefix(projectName, "-") {
-		projectName = projectName[1:] // Remove leading dash
-	}
 
 	projectDir := filepath.Join(homeDir, ".claude", "projects", projectName)
 
