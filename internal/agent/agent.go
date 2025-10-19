@@ -1,10 +1,7 @@
 package agent
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -26,126 +23,60 @@ type StreamMessage struct {
 }
 
 // Run starts the agent wrapper for a given worktree
-// It launches Claude Code with stream-json format and captures the conversation
+// It launches Claude Code normally and shows context from previous conversation
 func Run(worktreeName string, cfg *config.Config) error {
 	// Find the todo for this worktree
 	todo := cfg.GetTodoForWorktree(worktreeName)
 	if todo == nil {
-		return fmt.Errorf("no todo found for worktree: %s", worktreeName)
+		// No todo found - just run Claude Code normally
+		return runClaudeCode("")
 	}
 
 	// Check if we have GitHub integration
 	if cfg.StorageBackend == nil || cfg.StorageBackend.Type != "github" {
-		return fmt.Errorf("GitHub integration required for agent mode")
+		// No GitHub integration - just run Claude Code normally
+		return runClaudeCode("")
 	}
 
 	// Get the issue number from the GitHub URL
 	issueNumber, err := extractIssueNumber(todo.GitHubURL)
 	if err != nil {
-		return fmt.Errorf("failed to extract issue number: %w", err)
+		fmt.Fprintf(os.Stderr, "Warning: failed to extract issue number: %v\n", err)
+		return runClaudeCode("")
 	}
 
 	// Load previous conversation from GitHub issue comments
 	ctx, err := loadContextFromIssue(cfg, issueNumber)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load context: %v\n", err)
+		ctx = ""
 	}
 
-	// Start Claude Code with stream-json format
-	cmd := exec.Command("claude",
-		"--dangerously-skip-permissions",
-		"--input-format", "stream-json",
-		"--output-format", "stream-json",
-		"--replay-user-messages",
-	)
+	// Run Claude Code with context
+	return runClaudeCode(ctx)
+}
+
+// runClaudeCode starts Claude Code with optional context
+func runClaudeCode(context string) error {
+	args := []string{"--dangerously-skip-permissions"}
 
 	// If we have context, inject it as a system prompt
-	if ctx != "" {
-		cmd.Args = append(cmd.Args, "--append-system-prompt", ctx)
+	if context != "" {
+		args = append(args, "--append-system-prompt", context)
 	}
 
-	// Set up pipes
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stdin pipe: %w", err)
-	}
+	// Start Claude Code
+	cmd := exec.Command("claude", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
-
-	// Start the command
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start claude: %w", err)
-	}
-
-	// Create channels for coordinating goroutines
-	done := make(chan error, 3)
-
-	// Goroutine to copy user input to Claude
-	go func() {
-		_, err := io.Copy(stdin, os.Stdin)
-		stdin.Close()
-		done <- err
-	}()
-
-	// Goroutine to handle Claude's output
-	go func() {
-		done <- handleClaudeOutput(stdout, cfg, issueNumber)
-	}()
-
-	// Goroutine to copy stderr to our stderr
-	go func() {
-		_, err := io.Copy(os.Stderr, stderr)
-		done <- err
-	}()
-
-	// Wait for command to finish
-	cmdErr := cmd.Wait()
-
-	// Wait for goroutines to finish
-	for i := 0; i < 3; i++ {
-		if err := <-done; err != nil && cmdErr == nil {
-			cmdErr = err
-		}
-	}
-
-	return cmdErr
+	return cmd.Run()
 }
 
-// handleClaudeOutput reads Claude's stream-json output, displays it to user, and posts to GitHub
-func handleClaudeOutput(reader io.Reader, cfg *config.Config, issueNumber int) error {
-	scanner := bufio.NewScanner(reader)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Write the line to stdout for the user to see
-		fmt.Println(line)
-
-		// Parse the JSON to extract messages
-		var msg StreamMessage
-		if err := json.Unmarshal([]byte(line), &msg); err != nil {
-			// Not a valid JSON message, skip
-			continue
-		}
-
-		// Post message to GitHub if it's a user or assistant message
-		if msg.Type == "user_message" || msg.Type == "assistant_message" {
-			if err := postMessageToGitHub(cfg, issueNumber, msg.Message); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to post message to GitHub: %v\n", err)
-			}
-		}
-	}
-
-	return scanner.Err()
-}
+// TODO: Implement conversation capture
+// For now, conversations are loaded as context but not automatically saved
+// Future: Add manual trigger or periodic save functionality
 
 // loadContextFromIssue loads previous conversation from GitHub issue comments
 func loadContextFromIssue(cfg *config.Config, issueNumber int) (string, error) {
@@ -179,25 +110,8 @@ func loadContextFromIssue(cfg *config.Config, issueNumber int) (string, error) {
 	return ctx.String(), nil
 }
 
-// postMessageToGitHub posts a message as a comment on the GitHub issue
-func postMessageToGitHub(cfg *config.Config, issueNumber int, msg Message) error {
-	var body string
-
-	if msg.Role == "assistant" {
-		// Mark Claude's messages with a robot emoji
-		body = fmt.Sprintf("🤖 **Claude:**\n\n%s", msg.Content)
-	} else {
-		// User messages go as-is
-		body = msg.Content
-	}
-
-	return github.CreateIssueComment(
-		cfg.StorageBackend.Owner,
-		cfg.StorageBackend.Repo,
-		issueNumber,
-		body,
-	)
-}
+// TODO: postMessageToGitHub - implement manual conversation saving
+// For now, users can manually add comments to issues
 
 // extractIssueNumber extracts the issue number from a GitHub URL
 // e.g., "https://github.com/owner/repo/issues/123" -> 123

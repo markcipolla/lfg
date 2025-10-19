@@ -207,13 +207,13 @@ func createPaneLayout(sessionName, worktreeName, path string, cfg *config.Config
 
 	// Now we have all vertical rows created
 	// Pane 0: description
-	// Pane 1: row 0
-	// Pane 2: row 1
-	// Pane 3: row 2
+	// Pane 1: agent
+	// Pane 2: row 0 (first user row)
+	// Pane 3: row 1 (second user row)
 	// etc.
 
 	// Step 2: Handle horizontal splits and commands for each row
-	paneIndex = 1 // Reset to first work pane
+	paneIndex = 2 // Reset to first user pane (pane 2, after description and agent)
 	for rowIdx, row := range layout {
 		if len(row.Panes) > 0 {
 			// Multi-pane row: split horizontally within this row
