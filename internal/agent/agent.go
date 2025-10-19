@@ -124,13 +124,21 @@ func runClaudeCode(context string, monitor *conversationMonitor) error {
 
 // start begins monitoring the Claude JSONL log file
 func (m *conversationMonitor) start() {
-	// Wait a bit for Claude to start and create the session
-	time.Sleep(2 * time.Second)
+	// Wait for Claude to create a session (up to 30 seconds)
+	var logPath string
+	var err error
 
-	// Find the most recent Claude session JSONL file
-	logPath, err := m.findLatestSession()
+	for i := 0; i < 30; i++ {
+		time.Sleep(1 * time.Second)
+
+		logPath, err = m.findLatestSession()
+		if err == nil {
+			break
+		}
+	}
+
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to find Claude session: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: failed to find Claude session after 30s: %v\n", err)
 		return
 	}
 
@@ -207,8 +215,10 @@ func (m *conversationMonitor) monitorLogFile(logPath string) {
 	}
 	defer file.Close()
 
-	// Seek to end of file if we have a last position
-	if m.lastPosition > 0 {
+	// Get current file size to seek to end (only monitor new messages)
+	fileInfo, err := file.Stat()
+	if err == nil {
+		m.lastPosition = fileInfo.Size()
 		file.Seek(m.lastPosition, 0)
 	}
 
