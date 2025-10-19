@@ -649,6 +649,18 @@ func (m *model) handleDeleteWorktree() (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Check if we're deleting the current worktree
+		currentWorktree, err := git.GetCurrentWorktree()
+		isDeletingCurrent := err == nil && currentWorktree == name
+
+		// Kill tmux session if it exists
+		sessionName := tmux.SanitizeSessionName(name)
+		if tmux.SessionExists(sessionName) {
+			if err := tmux.KillSession(sessionName); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to kill tmux session: %v\n", err)
+			}
+		}
+
 		// Delete worktree
 		if err := git.DeleteWorktree(name, true); err != nil {
 			m.err = err
@@ -656,13 +668,20 @@ func (m *model) handleDeleteWorktree() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Mark todo as done
-		m.config.MarkTodoDone(name)
+		// Remove todo entirely (don't just mark as done)
+		m.config.RemoveTodo(name)
 		if err := m.config.Save(); err != nil {
 			m.err = fmt.Errorf("failed to save config: %w", err)
 		}
 
 		m.deleting = false
+
+		// If we deleted the current worktree, exit the TUI
+		// The user will be returned to their shell (in the main repo)
+		if isDeletingCurrent {
+			return m, tea.Quit
+		}
+
 		return m, m.refreshWorktrees
 	}
 

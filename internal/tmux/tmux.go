@@ -43,10 +43,15 @@ func CreateOrAttachSession(name, path string, cfg *config.Config) error {
 	return createSession(sessionName, name, path, cfg)
 }
 
-// sanitizeSessionName converts characters that tmux doesn't allow in session names
-func sanitizeSessionName(name string) string {
+// SanitizeSessionName converts characters that tmux doesn't allow in session names
+func SanitizeSessionName(name string) string {
 	// Replace dots with underscores (tmux converts dots to underscores)
 	return strings.ReplaceAll(name, ".", "_")
+}
+
+// sanitizeSessionName is a wrapper for backward compatibility
+func sanitizeSessionName(name string) string {
+	return SanitizeSessionName(name)
 }
 
 // ensureWindows checks if the session has the correct pane layout and recreates if needed

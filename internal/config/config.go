@@ -135,6 +135,17 @@ func (c *Config) MarkTodoDone(worktree string) {
 	}
 }
 
+// RemoveTodo removes a todo entirely by worktree name
+func (c *Config) RemoveTodo(worktree string) {
+	for i := range c.Todos {
+		if c.Todos[i].Worktree == worktree {
+			// Remove by slicing
+			c.Todos = append(c.Todos[:i], c.Todos[i+1:]...)
+			break
+		}
+	}
+}
+
 // GetTodoForWorktree returns the todo associated with a worktree
 func (c *Config) GetTodoForWorktree(worktree string) *Todo {
 	for i := range c.Todos {
