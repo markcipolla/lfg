@@ -627,7 +627,34 @@ func (m *model) handleCreateWorktreeFromGithub(item *github.ProjectItem) (tea.Mo
 
 func (m *model) handleDeleteWorktree() (tea.Model, tea.Cmd) {
 	if item, ok := m.list.SelectedItem().(worktreeItem); ok {
-		name := git.GetWorktreeName(item.worktree.Path)
+		// Get the name from either the worktree or the todo
+		var name string
+		if item.isCheckedOut {
+			name = git.GetWorktreeName(item.worktree.Path)
+		} else if item.todo != nil {
+			name = item.todo.Worktree
+		} else if item.githubItem != nil {
+			// GitHub item without worktree - nothing to delete from git
+			// Just remove from GitHub project if needed
+			if m.config.StorageBackend != nil && m.config.StorageBackend.Type == "github" {
+				err := github.UpdateProjectItemStatus(
+					m.config.StorageBackend.Owner,
+					m.config.StorageBackend.Repo,
+					m.config.StorageBackend.ProjectNumber,
+					item.githubItem.ID,
+					"Done",
+				)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to update item status to Done: %v\n", err)
+				}
+			}
+			m.deleting = false
+			return m, m.refreshWorktrees
+		} else {
+			// No way to identify this item
+			m.deleting = false
+			return m, nil
+		}
 
 		// Check if branch is merged
 		isMerged, err := git.IsBranchMerged(name)
