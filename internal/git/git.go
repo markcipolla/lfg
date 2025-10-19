@@ -157,6 +157,19 @@ func IsBranchMerged(branchName string) (bool, error) {
 
 // DeleteWorktree deletes a git worktree
 func DeleteWorktree(name string, deleteBranch bool) error {
+	// Check if we're currently in the worktree being deleted
+	currentWorktree, err := GetCurrentWorktree()
+	if err == nil && currentWorktree == name {
+		// Change to main worktree first
+		mainPath, err := GetMainWorktreePath()
+		if err != nil {
+			return fmt.Errorf("failed to get main worktree: %w", err)
+		}
+		if err := os.Chdir(mainPath); err != nil {
+			return fmt.Errorf("failed to change to main worktree: %w", err)
+		}
+	}
+
 	// Remove worktree
 	cmd := exec.Command("git", "worktree", "remove", name)
 	output, err := cmd.CombinedOutput()
@@ -174,6 +187,28 @@ func DeleteWorktree(name string, deleteBranch bool) error {
 	}
 
 	return nil
+}
+
+// GetMainWorktreePath returns the path to the main (non-worktree) repository
+func GetMainWorktreePath() (string, error) {
+	worktrees, err := ListWorktrees()
+	if err != nil {
+		return "", err
+	}
+
+	// Main worktree has empty branch (it's at the repo root)
+	for _, wt := range worktrees {
+		if wt.Branch == "" || strings.Contains(wt.Branch, "refs/heads/") && !strings.Contains(wt.Path, "/.git/worktrees/") {
+			return wt.Path, nil
+		}
+	}
+
+	// Fallback: first worktree is usually main
+	if len(worktrees) > 0 {
+		return worktrees[0].Path, nil
+	}
+
+	return "", fmt.Errorf("no main worktree found")
 }
 
 // JumpToWorktree switches to a worktree by creating/attaching tmux session
