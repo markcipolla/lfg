@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/markcipolla/lfg/internal/config"
@@ -32,14 +33,14 @@ func CreateOrAttachSession(name, path string, cfg *config.Config) error {
 
 	// If session exists, ensure windows exist and attach
 	if SessionExists(sessionName) {
-		if err := ensureWindows(sessionName, path, cfg); err != nil {
+		if err := ensureWindows(sessionName, name, path, cfg); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to ensure windows: %v\n", err)
 		}
 		return attachSession(sessionName)
 	}
 
-	// Create new session
-	return createSession(sessionName, path, cfg)
+	// Create new session (pass both sanitized session name and original worktree name)
+	return createSession(sessionName, name, path, cfg)
 }
 
 // sanitizeSessionName converts characters that tmux doesn't allow in session names
@@ -49,7 +50,7 @@ func sanitizeSessionName(name string) string {
 }
 
 // ensureWindows checks if the session has the correct pane layout and recreates if needed
-func ensureWindows(sessionName, path string, cfg *config.Config) error {
+func ensureWindows(sessionName, worktreeName, path string, cfg *config.Config) error {
 	// Check if the "main" window exists
 	cmd := exec.Command("tmux", "list-windows", "-t", sessionName, "-F", "#{window_name}")
 	output, err := cmd.Output()
@@ -83,95 +84,166 @@ func ensureWindows(sessionName, path string, cfg *config.Config) error {
 		}
 
 		// Create the pane layout
-		return createPaneLayout(sessionName, path, cfg)
+		return createPaneLayout(sessionName, worktreeName, path, cfg)
 	}
 
 	return nil
 }
 
-func createSession(name, path string, cfg *config.Config) error {
+func createSession(sessionName, worktreeName, path string, cfg *config.Config) error {
 	// Verify path exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return fmt.Errorf("path does not exist: %s", path)
 	}
 
 	// Create initial session (detached) with a single window
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", path)
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", path)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create session: %s (output: %s)", err, string(output))
 	}
 
 	// Rename the window to "main"
-	cmd = exec.Command("tmux", "rename-window", "-t", fmt.Sprintf("%s:0", name), "main")
+	cmd = exec.Command("tmux", "rename-window", "-t", fmt.Sprintf("%s:0", sessionName), "main")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to rename window: %w", err)
 	}
 
-	return createPaneLayout(name, path, cfg)
+	return createPaneLayout(sessionName, worktreeName, path, cfg)
 }
 
-func createPaneLayout(name, path string, cfg *config.Config) error {
-	target := fmt.Sprintf("%s:main", name)
+func createPaneLayout(sessionName, worktreeName, path string, cfg *config.Config) error {
+	target := fmt.Sprintf("%s:main", sessionName)
 
-	// Create top pane for description (15% of screen)
-	// Split horizontally to create top pane
-	cmd := exec.Command("tmux", "split-window", "-t", target, "-v", "-p", "85", "-c", path)
+	// Get layout (handles backward compatibility with old Windows format)
+	layout := cfg.GetLayout()
+	if len(layout) == 0 {
+		return fmt.Errorf("no layout defined in config")
+	}
+
+	// Step 1: Create description pane at top (always 5%)
+	// Split the initial pane: top 5% for description, bottom 95% for work panes
+	cmd := exec.Command("tmux", "split-window", "-t", target, "-v", "-p", "95", "-c", path)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to create top pane: %w", err)
+		return fmt.Errorf("failed to create description pane: %w", err)
 	}
 
-	// The original pane is now at index 0 (top), new pane at index 1 (bottom)
-	// Select the bottom pane and split it for the configured panes
-	bottomPane := fmt.Sprintf("%s.1", target)
+	// Now we have:
+	// - Pane 0: description (top 5%)
+	// - Pane 1: work area (bottom 95%)
 
-	// Create panes based on configuration
-	// We'll create a layout: top description pane, then split bottom into configured panes
-	if len(cfg.Windows) > 0 {
-		// First configured pane already exists (bottom pane)
-		// Run command if specified
-		if cfg.Windows[0].Command != nil && *cfg.Windows[0].Command != "" {
-			cmd = exec.Command("tmux", "send-keys", "-t", bottomPane, *cfg.Windows[0].Command, "Enter")
-			if err := cmd.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to run command in pane 0: %v\n", err)
-			}
-		}
-
-		// Create additional panes by splitting
-		for i := 1; i < len(cfg.Windows); i++ {
-			// Split the current layout to add more panes
-			// Use vertical splits for additional panes
-			percentage := 100 / (len(cfg.Windows) - i + 1)
-			cmd = exec.Command("tmux", "split-window", "-t", bottomPane, "-h", "-p", fmt.Sprintf("%d", percentage), "-c", path)
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("failed to create pane %d: %w", i, err)
-			}
-
-			// Run command in the new pane if specified
-			if cfg.Windows[i].Command != nil && *cfg.Windows[i].Command != "" {
-				paneTarget := fmt.Sprintf("%s.%d", target, i+1)
-				cmd = exec.Command("tmux", "send-keys", "-t", paneTarget, *cfg.Windows[i].Command, "Enter")
-				if err := cmd.Run(); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to run command in pane %d: %v\n", i, err)
-				}
-			}
-		}
-	}
-
-	// Setup the description pane (pane 0)
+	// Setup description pane
 	descPane := fmt.Sprintf("%s.0", target)
-	if err := setupDescriptionPane(descPane, name, cfg); err != nil {
+	if err := setupDescriptionPane(descPane, worktreeName, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to setup description pane: %v\n", err)
 	}
 
-	// Select the first work pane (pane 1 - first configured pane)
+	// Step 2: Build work panes in the bottom 90% according to layout
+	// Start with pane 1 (the 90% work area)
+	paneIndex := 1
+
+	// Parse height percentages from layout
+	heights := make([]int, len(layout))
+	for i, row := range layout {
+		height := parsePercentage(row.Height)
+		if height <= 0 {
+			height = 100 / len(layout) // Default to equal split
+		}
+		heights[i] = height
+	}
+
+	// Track remaining percentage of work area
+	remainingPercent := 100
+
+	// Step 1: Create all vertical rows first
+	for rowIdx := 1; rowIdx < len(layout); rowIdx++ {
+		// Calculate the sum of all remaining rows' heights
+		remainingHeight := 0
+		for i := rowIdx; i < len(layout); i++ {
+			remainingHeight += heights[i]
+		}
+
+		// Split percentage: give the new pane all remaining rows' space
+		// The current pane will keep what it needs automatically
+		splitPercent := (remainingHeight * 100) / remainingPercent
+
+		// Split vertically to create this row (always split the bottom pane)
+		splitTarget := fmt.Sprintf("%s.%d", target, paneIndex)
+		fmt.Fprintf(os.Stderr, "DEBUG: Creating row %d - splitTarget=%s, paneIndex=%d, splitPercent=%d, remainingPercent=%d, remainingHeight=%d\n",
+			rowIdx, splitTarget, paneIndex, splitPercent, remainingPercent, remainingHeight)
+		cmd := exec.Command("tmux", "split-window", "-t", splitTarget, "-v", "-p", fmt.Sprintf("%d", splitPercent), "-c", path)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to create row %d: %w", rowIdx, err)
+		}
+
+		// Update remaining percentage (subtract the row we just created's height)
+		remainingPercent -= heights[rowIdx-1]
+		paneIndex++
+	}
+
+	// Now we have all vertical rows created
+	// Pane 0: description
+	// Pane 1: row 0
+	// Pane 2: row 1
+	// Pane 3: row 2
+	// etc.
+
+	// Step 2: Handle horizontal splits and commands for each row
+	paneIndex = 1 // Reset to first work pane
+	for rowIdx, row := range layout {
+		if len(row.Panes) > 0 {
+			// Multi-pane row: split horizontally within this row
+			rowStartPane := paneIndex
+
+			// Create all horizontal splits by splitting the leftmost pane each time
+			for paneIdx := 1; paneIdx < len(row.Panes); paneIdx++ {
+				// Calculate percentage: new pane gets (remaining-1)/remaining of current pane's size
+				remainingPanes := len(row.Panes) - paneIdx + 1
+				hSplitPercent := (100 * (remainingPanes - 1)) / remainingPanes
+
+				// Always split the first pane of this row (rowStartPane)
+				splitTarget := fmt.Sprintf("%s.%d", target, rowStartPane)
+				cmd := exec.Command("tmux", "split-window", "-t", splitTarget, "-h", "-p", fmt.Sprintf("%d", hSplitPercent), "-c", path)
+				if err := cmd.Run(); err != nil {
+					return fmt.Errorf("failed to create horizontal pane %d in row %d: %w", paneIdx, rowIdx, err)
+				}
+			}
+
+			// After all splits, run commands on each pane
+			for paneIdx, pane := range row.Panes {
+				if pane.Command != nil && *pane.Command != "" {
+					paneTarget := fmt.Sprintf("%s.%d", target, rowStartPane+paneIdx)
+					cmd := exec.Command("tmux", "send-keys", "-t", paneTarget, *pane.Command, "Enter")
+					if err := cmd.Run(); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to run command in pane %s: %v\n", pane.Name, err)
+					}
+				}
+			}
+
+			// Move to next row's starting pane
+			paneIndex += len(row.Panes)
+		} else {
+			// Single-pane row
+			if row.Command != nil && *row.Command != "" {
+				// Run command if specified
+				paneTarget := fmt.Sprintf("%s.%d", target, paneIndex)
+				cmd := exec.Command("tmux", "send-keys", "-t", paneTarget, *row.Command, "Enter")
+				if err := cmd.Run(); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to run command in pane %s: %v\n", row.Name, err)
+				}
+			}
+			paneIndex++
+		}
+	}
+
+	// Select the first work pane (pane 1)
 	cmd = exec.Command("tmux", "select-pane", "-t", fmt.Sprintf("%s.1", target))
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to select work pane: %v\n", err)
 	}
 
 	// Attach to session
-	return attachSession(name)
+	return attachSession(sessionName)
 }
 
 func setupDescriptionPane(pane, worktreeName string, cfg *config.Config) error {
@@ -232,4 +304,18 @@ func ListSessions() ([]string, error) {
 
 	sessions := strings.Split(strings.TrimSpace(string(output)), "\n")
 	return sessions, nil
+}
+
+// parsePercentage parses a percentage string like "40%" into an integer 40
+func parsePercentage(s string) int {
+	// Remove % sign and whitespace
+	s = strings.TrimSpace(s)
+	s = strings.TrimSuffix(s, "%")
+
+	// Parse as integer
+	val, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return val
 }

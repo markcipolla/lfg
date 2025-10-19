@@ -28,6 +28,7 @@ type model struct {
 	width          int
 	height         int
 	selectedWorktree string
+	exitToMain     bool // true if user selected main worktree to exit current session
 }
 
 type worktreeItem struct {
@@ -112,10 +113,15 @@ var (
 			Bold(true)
 )
 
-func Run(cfg *config.Config) error {
+type Result struct {
+	SelectedWorktree string
+	ExitToMain       bool
+}
+
+func Run(cfg *config.Config) (*Result, error) {
 	// Check tmux
 	if !tmux.IsInstalled() {
-		return fmt.Errorf("tmux is not installed")
+		return nil, fmt.Errorf("tmux is not installed")
 	}
 
 	// Get current worktree if we're in one
@@ -128,7 +134,7 @@ func Run(cfg *config.Config) error {
 	// Get worktrees
 	worktrees, err := git.ListWorktrees()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Get GitHub project items if configured
@@ -177,6 +183,41 @@ func Run(cfg *config.Config) error {
 			if itemName == name || (item.Content.Number > 0 && fmt.Sprintf("issue-%d", item.Content.Number) == name) {
 				matchedItem = item
 				matchedGithubItems[item.ID] = true
+
+				// Update the todo with GitHub data if it exists
+				if todo != nil {
+					// Get the body from the content if available
+					if item.Content.Body != "" {
+						todo.GitHubBody = item.Content.Body
+					} else if item.Body != "" {
+						todo.GitHubBody = item.Body
+					}
+					if item.Content.URL != "" {
+						todo.GitHubURL = item.Content.URL
+					}
+					// Save the updated config
+					cfg.Save()
+				}
+
+				// If this item has a worktree but isn't in "In Progress" or "Done", move it to "In Progress"
+				if cfg.StorageBackend != nil && cfg.StorageBackend.Type == "github" {
+					if item.Status != "In Progress" && item.Status != "Done" {
+						err := github.UpdateProjectItemStatus(
+							cfg.StorageBackend.Owner,
+							cfg.StorageBackend.Repo,
+							cfg.StorageBackend.ProjectNumber,
+							item.ID,
+							"In Progress",
+						)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Warning: failed to update item status to In Progress: %v\n", err)
+						} else {
+							// Update the local copy
+							item.Status = "In Progress"
+						}
+					}
+				}
+
 				break
 			}
 		}
@@ -243,16 +284,15 @@ func Run(cfg *config.Config) error {
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// Check if user selected a worktree
+	// Return the result
 	result := finalModel.(*model)
-	if result.selectedWorktree != "" {
-		return git.JumpToWorktree(result.selectedWorktree, cfg)
-	}
-
-	return nil
+	return &Result{
+		SelectedWorktree: result.selectedWorktree,
+		ExitToMain:       result.exitToMain,
+	}, nil
 }
 
 func (m *model) Init() tea.Cmd {
@@ -301,8 +341,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if item.githubItem != nil && !item.isCheckedOut {
 					return m.handleCreateWorktreeFromGithub(item.githubItem)
 				}
-				// Otherwise jump to existing worktree
-				m.selectedWorktree = git.GetWorktreeName(item.worktree.Path)
+
+				// Check if this is the main worktree (first in the list)
+				name := git.GetWorktreeName(item.worktree.Path)
+				isMainWorktree := false
+				if len(m.worktrees) > 0 {
+					mainName := git.GetWorktreeName(m.worktrees[0].Path)
+					isMainWorktree = (name == mainName)
+				}
+
+				// If it's the main worktree, set flag to exit current session
+				if isMainWorktree {
+					m.exitToMain = true
+					m.selectedWorktree = name
+					return m, tea.Quit
+				}
+
+				// Otherwise jump to the selected worktree
+				m.selectedWorktree = name
 				return m, tea.Quit
 			}
 

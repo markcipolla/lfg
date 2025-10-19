@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/markcipolla/lfg/internal/config"
 	"github.com/markcipolla/lfg/internal/git"
@@ -52,19 +53,48 @@ func main() {
 	}
 
 	// Check if we're in a tmux session managed by lfg (before loading config!)
-	if os.Getenv("TMUX") != "" && worktree == "" {
-		// We're in tmux and no worktree specified - detach cleanly
-		// After detaching, the user will be back at their shell and can run 'lfg' again
+	if os.Getenv("TMUX") != "" && worktree == "" && os.Getenv("LFG_POPUP") == "" {
+		// We're in tmux - show the main selector in a popup overlay
 
-		cmd := exec.Command("tmux", "detach-client")
-		err := cmd.Run()
+		// Find lfg binary
+		lfgPath, err := exec.LookPath("lfg")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error detaching from tmux: %v\n", err)
-			os.Exit(1)
+			lfgPath = "lfg"
 		}
 
-		// Print message that will appear after detaching
-		fmt.Println("\n✨ Detached from session. Run 'lfg' again to select a worktree.")
+		// Get the main repo root (where we want to run lfg from)
+		// Try to get the main worktree root by listing all worktrees
+		cmd := exec.Command("git", "worktree", "list", "--porcelain")
+		output, err := cmd.Output()
+		var repoRootStr string
+		if err == nil {
+			// Parse the output to get the first worktree path (main worktree)
+			lines := strings.Split(string(output), "\n")
+			for _, line := range lines {
+				if strings.HasPrefix(line, "worktree ") {
+					repoRootStr = strings.TrimPrefix(line, "worktree ")
+					break
+				}
+			}
+		}
+		if repoRootStr == "" {
+			// Fallback to rev-parse if worktree list fails
+			cmd = exec.Command("git", "rev-parse", "--show-toplevel")
+			repoRoot, err := cmd.Output()
+			if err == nil && len(repoRoot) > 0 {
+				repoRootStr = string(repoRoot[:len(repoRoot)-1]) // trim newline
+			} else {
+				// If not in a git repo, just use current dir
+				repoRootStr, _ = os.Getwd()
+			}
+		}
+
+		// Use tmux display-popup to show lfg in a fullscreen popup
+		// When they exit the popup, they're back in the current pane
+		popupCmd := fmt.Sprintf("cd '%s' && LFG_POPUP=1 %s", repoRootStr, lfgPath)
+		cmd = exec.Command("tmux", "display-popup", "-E", "-w", "100%", "-h", "100%", popupCmd)
+		cmd.Run() // Ignore errors
+
 		os.Exit(0)
 	}
 
@@ -85,8 +115,48 @@ func main() {
 	}
 
 	// Otherwise, show TUI
-	if err := tui.Run(cfg); err != nil {
+	result, err := tui.Run(cfg)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Handle the result
+	if result != nil && result.SelectedWorktree != "" {
+		// If user wants to exit to main, handle specially
+		if result.ExitToMain {
+			// Get the main worktree path
+			worktrees, err := git.ListWorktrees()
+			if err == nil && len(worktrees) > 0 {
+				mainPath := worktrees[0].Path
+
+				// If we're in a tmux session, send commands to cd and detach
+				if os.Getenv("TMUX") != "" {
+					// Get current session name
+					sessionName := ""
+					cmd := exec.Command("tmux", "display-message", "-p", "#{session_name}")
+					if output, err := cmd.Output(); err == nil {
+						sessionName = strings.TrimSpace(string(output))
+					}
+
+					if sessionName != "" {
+						// Send command to cd to main path and then kill the session
+						// This will happen after the popup closes
+						cdCmd := fmt.Sprintf("cd '%s' && tmux kill-session", mainPath)
+						exec.Command("tmux", "send-keys", "-t", sessionName, cdCmd, "Enter").Run()
+					}
+				} else {
+					// Not in tmux, just cd
+					os.Chdir(mainPath)
+				}
+			}
+			return
+		}
+
+		// Otherwise, jump to the selected worktree
+		if err := git.JumpToWorktree(result.SelectedWorktree, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Error jumping to worktree: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }

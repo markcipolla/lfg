@@ -483,16 +483,27 @@ func (m *initModel) createGitHubProject() tea.Msg {
 }
 
 func (m *initModel) completeSetup(backend *StorageBackend) (tea.Model, tea.Cmd) {
-	// Create default config
+	// Create default config with new layout format
+	// Description pane is automatic (always top 10%), so layout only defines the remaining 90%
 	m.config = &Config{
 		Name:           m.projectName,
 		WorktreeNaming: "Add feature",
 		StorageBackend: backend,
 		Todos:          []Todo{},
-		Windows: []TmuxWindow{
-			{Name: "code", Command: nil},
-			{Name: "server", Command: stringPtr("claude --dangerously-skip-permissions")},
-			{Name: "shell", Command: nil},
+		Layout: []LayoutRow{
+			{
+				Height: "33%",
+				Name:   "code",
+			},
+			{
+				Height: "34%",
+				Name:   "server",
+				Command: stringPtr("claude --dangerously-skip-permissions"),
+			},
+			{
+				Height: "33%",
+				Name:   "shell",
+			},
 		},
 		configPath: m.configPath,
 	}
