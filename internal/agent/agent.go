@@ -28,9 +28,21 @@ type StreamMessage struct {
 
 // JSONLEntry represents a single line from Claude's JSONL log file
 type JSONLEntry struct {
-	Type    string          `json:"type"`    // "user", "assistant", "summary", etc.
-	Content json.RawMessage `json:"content"` // Raw content to parse based on type
-	Text    string          `json:"text"`    // For user/assistant messages
+	Type      string         `json:"type"`      // "user", "assistant", "summary", etc.
+	SessionID string         `json:"sessionId"` // Session ID
+	Message   MessageContent `json:"message"`   // The actual message
+}
+
+// MessageContent represents the message content in the JSONL entry
+type MessageContent struct {
+	Role    string           `json:"role"`    // "user" or "assistant"
+	Content []ContentBlock   `json:"content"` // Content blocks
+}
+
+// ContentBlock represents a content block (text, tool use, etc.)
+type ContentBlock struct {
+	Type string `json:"type"` // "text", "tool_use", etc.
+	Text string `json:"text"` // Text content
 }
 
 // conversationMonitor monitors the Claude JSONL log and posts to GitHub
@@ -115,22 +127,14 @@ func (m *conversationMonitor) start() {
 	// Wait a bit for Claude to start and create the session
 	time.Sleep(2 * time.Second)
 
-	// Find the most recent Claude session directory
-	sessionDir, err := m.findLatestSession()
+	// Find the most recent Claude session JSONL file
+	logPath, err := m.findLatestSession()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to find Claude session: %v\n", err)
 		return
 	}
 
-	logPath := filepath.Join(sessionDir, "session.jsonl")
-
-	// Wait for the log file to be created
-	for i := 0; i < 30; i++ {
-		if _, err := os.Stat(logPath); err == nil {
-			break
-		}
-		time.Sleep(1 * time.Second)
-	}
+	fmt.Fprintf(os.Stderr, "Monitoring Claude session log: %s\n", logPath)
 
 	// Monitor the log file
 	m.monitorLogFile(logPath)
@@ -141,34 +145,40 @@ func (m *conversationMonitor) stop() {
 	close(m.stopChan)
 }
 
-// findLatestSession finds the most recent Claude session directory
+// findLatestSession finds the most recent Claude session JSONL file
 func (m *conversationMonitor) findLatestSession() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 
-	// Get current working directory name as project name
+	// Get current working directory and convert to Claude's project name format
+	// Claude replaces slashes with hyphens and removes the leading slash
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	projectName := filepath.Base(cwd)
+
+	// Convert /Users/foo/bar to -Users-foo-bar
+	projectName := strings.ReplaceAll(cwd, "/", "-")
+	if strings.HasPrefix(projectName, "-") {
+		projectName = projectName[1:] // Remove leading dash
+	}
 
 	projectDir := filepath.Join(homeDir, ".claude", "projects", projectName)
 
-	// List all session directories
+	// List all JSONL files in the project directory
 	entries, err := os.ReadDir(projectDir)
 	if err != nil {
 		return "", err
 	}
 
-	// Find the most recently modified session directory
-	var latestSession string
+	// Find the most recently modified JSONL file
+	var latestFile string
 	var latestTime time.Time
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
 		}
 
@@ -180,15 +190,15 @@ func (m *conversationMonitor) findLatestSession() (string, error) {
 
 		if info.ModTime().After(latestTime) {
 			latestTime = info.ModTime()
-			latestSession = fullPath
+			latestFile = fullPath
 		}
 	}
 
-	if latestSession == "" {
-		return "", fmt.Errorf("no session directories found")
+	if latestFile == "" {
+		return "", fmt.Errorf("no JSONL files found in %s", projectDir)
 	}
 
-	return latestSession, nil
+	return latestFile, nil
 }
 
 // monitorLogFile tails the JSONL log file and processes entries
@@ -240,21 +250,19 @@ func (m *conversationMonitor) processLogEntry(line string) {
 		return
 	}
 
-	// Extract text content
-	text := entry.Text
-	if text == "" {
-		// Try to parse from content
-		var content map[string]interface{}
-		if err := json.Unmarshal(entry.Content, &content); err == nil {
-			if t, ok := content["text"].(string); ok {
-				text = t
-			}
+	// Extract text content from message.content blocks
+	var textParts []string
+	for _, block := range entry.Message.Content {
+		if block.Type == "text" && block.Text != "" {
+			textParts = append(textParts, block.Text)
 		}
 	}
 
-	if text == "" {
+	if len(textParts) == 0 {
 		return // No text content to post
 	}
+
+	text := strings.Join(textParts, "\n")
 
 	// Post to GitHub
 	var body string

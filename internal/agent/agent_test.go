@@ -84,30 +84,30 @@ func TestFindLatestSession(t *testing.T) {
 
 func TestJSONLEntryParsing(t *testing.T) {
 	tests := []struct {
-		name        string
-		json        string
-		expectError bool
+		name         string
+		json         string
+		expectError  bool
 		expectedType string
 		expectedText string
 	}{
 		{
-			name:        "user message",
-			json:        `{"type":"user","text":"test message"}`,
-			expectError: false,
+			name:         "user message",
+			json:         `{"type":"user","sessionId":"abc123","message":{"role":"user","content":[{"type":"text","text":"test message"}]}}`,
+			expectError:  false,
 			expectedType: "user",
 			expectedText: "test message",
 		},
 		{
-			name:        "assistant message",
-			json:        `{"type":"assistant","text":"response message"}`,
-			expectError: false,
+			name:         "assistant message",
+			json:         `{"type":"assistant","sessionId":"abc123","message":{"role":"assistant","content":[{"type":"text","text":"response message"}]}}`,
+			expectError:  false,
 			expectedType: "assistant",
 			expectedText: "response message",
 		},
 		{
-			name:        "message with content field",
-			json:        `{"type":"user","content":{"text":"nested text"}}`,
-			expectError: false,
+			name:         "message with multiple content blocks",
+			json:         `{"type":"user","sessionId":"abc123","message":{"role":"user","content":[{"type":"text","text":"part1"},{"type":"text","text":"part2"}]}}`,
+			expectError:  false,
 			expectedType: "user",
 		},
 	}
@@ -128,8 +128,10 @@ func TestJSONLEntryParsing(t *testing.T) {
 				if entry.Type != tt.expectedType {
 					t.Errorf("got type %q, want %q", entry.Type, tt.expectedType)
 				}
-				if tt.expectedText != "" && entry.Text != tt.expectedText {
-					t.Errorf("got text %q, want %q", entry.Text, tt.expectedText)
+				if tt.expectedText != "" && len(entry.Message.Content) > 0 {
+					if entry.Message.Content[0].Text != tt.expectedText {
+						t.Errorf("got text %q, want %q", entry.Message.Content[0].Text, tt.expectedText)
+					}
 				}
 			}
 		})
