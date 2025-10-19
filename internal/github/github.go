@@ -616,3 +616,61 @@ func escapeString(s string) string {
 	s = strings.ReplaceAll(s, "\n", "\\n")
 	return s
 }
+
+// IssueComment represents a comment on a GitHub issue
+type IssueComment struct {
+	ID        int    `json:"id"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+	User      struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
+// GetIssueComments fetches all comments for a GitHub issue
+func GetIssueComments(owner, repo string, issueNumber int) ([]IssueComment, error) {
+	cmd := exec.Command("gh", "api",
+		fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, issueNumber),
+		"--jq", ".")
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get issue comments: %w", err)
+	}
+
+	var comments []IssueComment
+	if err := json.Unmarshal(output, &comments); err != nil {
+		return nil, fmt.Errorf("failed to parse issue comments: %w", err)
+	}
+
+	return comments, nil
+}
+
+// CreateIssueComment creates a new comment on a GitHub issue
+func CreateIssueComment(owner, repo string, issueNumber int, body string) error {
+	// Create a JSON payload
+	payload := map[string]string{
+		"body": body,
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal comment body: %w", err)
+	}
+
+	cmd := exec.Command("gh", "api",
+		fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, issueNumber),
+		"--method", "POST",
+		"--input", "-")
+
+	cmd.Stdin = bytes.NewReader(payloadBytes)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to create issue comment: %s", stderr.String())
+	}
+
+	return nil
+}

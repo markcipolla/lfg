@@ -128,7 +128,7 @@ func createPaneLayout(sessionName, worktreeName, path string, cfg *config.Config
 	}
 
 	// Step 1: Create description pane at top (always 5%)
-	// Split the initial pane: top 5% for description, bottom 95% for work panes
+	// Split the initial pane: top 5% for description, bottom 95% for rest
 	cmd := exec.Command("tmux", "split-window", "-t", target, "-v", "-p", "95", "-c", path)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to create description pane: %w", err)
@@ -136,7 +136,7 @@ func createPaneLayout(sessionName, worktreeName, path string, cfg *config.Config
 
 	// Now we have:
 	// - Pane 0: description (top 5%)
-	// - Pane 1: work area (bottom 95%)
+	// - Pane 1: rest (bottom 95%)
 
 	// Setup description pane
 	descPane := fmt.Sprintf("%s.0", target)
@@ -144,9 +144,27 @@ func createPaneLayout(sessionName, worktreeName, path string, cfg *config.Config
 		fmt.Fprintf(os.Stderr, "Warning: failed to setup description pane: %v\n", err)
 	}
 
-	// Step 2: Build work panes in the bottom 90% according to layout
-	// Start with pane 1 (the 90% work area)
-	paneIndex := 1
+	// Step 2: Create agent pane (always 45% of remaining space)
+	// Split pane 1: top 45% for agent, bottom 55% for user panes
+	cmd = exec.Command("tmux", "split-window", "-t", fmt.Sprintf("%s.1", target), "-v", "-p", "55", "-c", path)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to create agent pane: %w", err)
+	}
+
+	// Now we have:
+	// - Pane 0: description (top 5%)
+	// - Pane 1: agent (45% of remaining 95% = ~43% of screen)
+	// - Pane 2: work area (55% of remaining 95% = ~52% of screen)
+
+	// Setup agent pane
+	agentPane := fmt.Sprintf("%s.1", target)
+	if err := setupAgentPane(agentPane, worktreeName, path, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to setup agent pane: %v\n", err)
+	}
+
+	// Step 3: Build work panes in the bottom area according to layout
+	// Start with pane 2 (the user-configured work area)
+	paneIndex := 2
 
 	// Parse height percentages from layout
 	heights := make([]int, len(layout))
@@ -242,10 +260,10 @@ func createPaneLayout(sessionName, worktreeName, path string, cfg *config.Config
 		}
 	}
 
-	// Select the first work pane (pane 1)
+	// Select the agent pane (pane 1)
 	cmd = exec.Command("tmux", "select-pane", "-t", fmt.Sprintf("%s.1", target))
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to select work pane: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: failed to select agent pane: %v\n", err)
 	}
 
 	// Attach to session
@@ -267,6 +285,25 @@ func setupDescriptionPane(pane, worktreeName string, cfg *config.Config) error {
 	// Launch the viewer TUI in the pane using lfg --view with config path
 	cmd := exec.Command("tmux", "send-keys", "-t", pane,
 		fmt.Sprintf("%s --view --config %s %s", lfgPath, configPath, worktreeName), "Enter")
+	return cmd.Run()
+}
+
+func setupAgentPane(pane, worktreeName, path string, cfg *config.Config) error {
+	// Find lfg binary
+	lfgPath := "lfg"
+
+	// Try to find the absolute path
+	if absPath, err := exec.LookPath("lfg"); err == nil {
+		lfgPath = absPath
+	}
+
+	// Get the config path
+	configPath := cfg.GetConfigPath()
+
+	// Launch the agent wrapper in the pane
+	// The wrapper will handle conversation capture and posting to GitHub
+	cmd := exec.Command("tmux", "send-keys", "-t", pane,
+		fmt.Sprintf("%s --agent --config %s %s", lfgPath, configPath, worktreeName), "Enter")
 	return cmd.Run()
 }
 

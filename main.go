@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/markcipolla/lfg/internal/agent"
 	"github.com/markcipolla/lfg/internal/config"
 	"github.com/markcipolla/lfg/internal/git"
 	"github.com/markcipolla/lfg/internal/tui"
@@ -15,7 +16,8 @@ import (
 
 func main() {
 	viewMode := flag.Bool("view", false, "View description for a worktree")
-	configPath := flag.String("config", "", "Path to config file (for viewer mode)")
+	agentMode := flag.Bool("agent", false, "Run agent wrapper for a worktree")
+	configPath := flag.String("config", "", "Path to config file (for viewer/agent mode)")
 	flag.Parse()
 
 	// Check if worktree name was provided
@@ -47,6 +49,35 @@ func main() {
 
 		if err := viewer.Run(worktree, cfg); err != nil {
 			fmt.Fprintf(os.Stderr, "Error running viewer: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Agent mode: run Claude Code wrapper with conversation capture
+	if *agentMode {
+		if worktree == "" {
+			fmt.Fprintf(os.Stderr, "Error: --agent requires a worktree name\n")
+			os.Exit(1)
+		}
+
+		// Load config from specified path
+		var cfg *config.Config
+		var err error
+		if *configPath != "" {
+			cfg, err = config.LoadFromPath(*configPath)
+		} else {
+			cfg, err = config.Load()
+		}
+
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Run the agent wrapper
+		if err := agent.Run(worktree, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Error running agent: %v\n", err)
 			os.Exit(1)
 		}
 		return

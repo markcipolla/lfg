@@ -37,7 +37,7 @@ type Pane struct {
 }
 
 type LayoutRow struct {
-	Height  string  `yaml:"height"`            // Height as percentage of work area (the 90% below description)
+	Height  string  `yaml:"height"`            // Height as percentage of work area (excluding description and agent panes)
 	Name    string  `yaml:"name,omitempty"`    // For single-pane rows
 	Command *string `yaml:"command,omitempty"` // For single-pane rows
 	Panes   []Pane  `yaml:"panes,omitempty"`   // For multi-pane rows (split horizontally)
