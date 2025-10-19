@@ -1,10 +1,14 @@
 package agent
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/markcipolla/lfg/internal/config"
 	"github.com/markcipolla/lfg/internal/github"
@@ -22,6 +26,23 @@ type StreamMessage struct {
 	Message Message `json:"message"` // The actual message
 }
 
+// JSONLEntry represents a single line from Claude's JSONL log file
+type JSONLEntry struct {
+	Type    string          `json:"type"`    // "user", "assistant", "summary", etc.
+	Content json.RawMessage `json:"content"` // Raw content to parse based on type
+	Text    string          `json:"text"`    // For user/assistant messages
+}
+
+// conversationMonitor monitors the Claude JSONL log and posts to GitHub
+type conversationMonitor struct {
+	cfg          *config.Config
+	issueNumber  int
+	projectName  string
+	sessionID    string
+	lastPosition int64
+	stopChan     chan bool
+}
+
 // Run starts the agent wrapper for a given worktree
 // It launches Claude Code normally and shows context from previous conversation
 func Run(worktreeName string, cfg *config.Config) error {
@@ -29,20 +50,20 @@ func Run(worktreeName string, cfg *config.Config) error {
 	todo := cfg.GetTodoForWorktree(worktreeName)
 	if todo == nil {
 		// No todo found - just run Claude Code normally
-		return runClaudeCode("")
+		return runClaudeCode("", nil)
 	}
 
 	// Check if we have GitHub integration
 	if cfg.StorageBackend == nil || cfg.StorageBackend.Type != "github" {
 		// No GitHub integration - just run Claude Code normally
-		return runClaudeCode("")
+		return runClaudeCode("", nil)
 	}
 
 	// Get the issue number from the GitHub URL
 	issueNumber, err := extractIssueNumber(todo.GitHubURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to extract issue number: %v\n", err)
-		return runClaudeCode("")
+		return runClaudeCode("", nil)
 	}
 
 	// Load previous conversation from GitHub issue comments
@@ -52,12 +73,19 @@ func Run(worktreeName string, cfg *config.Config) error {
 		ctx = ""
 	}
 
-	// Run Claude Code with context
-	return runClaudeCode(ctx)
+	// Create conversation monitor
+	monitor := &conversationMonitor{
+		cfg:         cfg,
+		issueNumber: issueNumber,
+		stopChan:    make(chan bool),
+	}
+
+	// Run Claude Code with context and monitor
+	return runClaudeCode(ctx, monitor)
 }
 
-// runClaudeCode starts Claude Code with optional context
-func runClaudeCode(context string) error {
+// runClaudeCode starts Claude Code with optional context and monitor
+func runClaudeCode(context string, monitor *conversationMonitor) error {
 	args := []string{"--dangerously-skip-permissions"}
 
 	// If we have context, inject it as a system prompt
@@ -71,12 +99,181 @@ func runClaudeCode(context string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	// If we have a monitor, start it in the background
+	if monitor != nil {
+		// Start monitoring in a goroutine
+		go monitor.start()
+		// Ensure we stop monitoring when Claude exits
+		defer monitor.stop()
+	}
+
 	return cmd.Run()
 }
 
-// TODO: Implement conversation capture
-// For now, conversations are loaded as context but not automatically saved
-// Future: Add manual trigger or periodic save functionality
+// start begins monitoring the Claude JSONL log file
+func (m *conversationMonitor) start() {
+	// Wait a bit for Claude to start and create the session
+	time.Sleep(2 * time.Second)
+
+	// Find the most recent Claude session directory
+	sessionDir, err := m.findLatestSession()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to find Claude session: %v\n", err)
+		return
+	}
+
+	logPath := filepath.Join(sessionDir, "session.jsonl")
+
+	// Wait for the log file to be created
+	for i := 0; i < 30; i++ {
+		if _, err := os.Stat(logPath); err == nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	// Monitor the log file
+	m.monitorLogFile(logPath)
+}
+
+// stop signals the monitor to stop
+func (m *conversationMonitor) stop() {
+	close(m.stopChan)
+}
+
+// findLatestSession finds the most recent Claude session directory
+func (m *conversationMonitor) findLatestSession() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	// Get current working directory name as project name
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	projectName := filepath.Base(cwd)
+
+	projectDir := filepath.Join(homeDir, ".claude", "projects", projectName)
+
+	// List all session directories
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return "", err
+	}
+
+	// Find the most recently modified session directory
+	var latestSession string
+	var latestTime time.Time
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		fullPath := filepath.Join(projectDir, entry.Name())
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			continue
+		}
+
+		if info.ModTime().After(latestTime) {
+			latestTime = info.ModTime()
+			latestSession = fullPath
+		}
+	}
+
+	if latestSession == "" {
+		return "", fmt.Errorf("no session directories found")
+	}
+
+	return latestSession, nil
+}
+
+// monitorLogFile tails the JSONL log file and processes entries
+func (m *conversationMonitor) monitorLogFile(logPath string) {
+	file, err := os.Open(logPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to open log file: %v\n", err)
+		return
+	}
+	defer file.Close()
+
+	// Seek to end of file if we have a last position
+	if m.lastPosition > 0 {
+		file.Seek(m.lastPosition, 0)
+	}
+
+	reader := bufio.NewReader(file)
+
+	for {
+		select {
+		case <-m.stopChan:
+			return
+		default:
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				// No more data, wait a bit and try again
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+
+			// Update position
+			m.lastPosition += int64(len(line))
+
+			// Process the log entry
+			m.processLogEntry(line)
+		}
+	}
+}
+
+// processLogEntry parses and processes a single JSONL log entry
+func (m *conversationMonitor) processLogEntry(line string) {
+	var entry JSONLEntry
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		return // Skip invalid JSON
+	}
+
+	// Only process user and assistant messages
+	if entry.Type != "user" && entry.Type != "assistant" {
+		return
+	}
+
+	// Extract text content
+	text := entry.Text
+	if text == "" {
+		// Try to parse from content
+		var content map[string]interface{}
+		if err := json.Unmarshal(entry.Content, &content); err == nil {
+			if t, ok := content["text"].(string); ok {
+				text = t
+			}
+		}
+	}
+
+	if text == "" {
+		return // No text content to post
+	}
+
+	// Post to GitHub
+	var body string
+	if entry.Type == "user" {
+		body = fmt.Sprintf("**User:** %s", text)
+	} else {
+		body = fmt.Sprintf("🤖 **Claude:** %s", text)
+	}
+
+	err := github.CreateIssueComment(
+		m.cfg.StorageBackend.Owner,
+		m.cfg.StorageBackend.Repo,
+		m.issueNumber,
+		body,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to post comment to GitHub: %v\n", err)
+	}
+}
 
 // loadContextFromIssue loads previous conversation from GitHub issue comments
 func loadContextFromIssue(cfg *config.Config, issueNumber int) (string, error) {
