@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -24,6 +25,8 @@ type model struct {
 	creating       bool
 	deleting       bool
 	textInput      textinput.Model
+	spinner        spinner.Model
+	loading        bool
 	err            error
 	width          int
 	height         int
@@ -137,32 +140,8 @@ func Run(cfg *config.Config) (*Result, error) {
 		return nil, err
 	}
 
-	// Get GitHub project items if configured
-	var githubItems []github.ProjectItem
-	if cfg.StorageBackend != nil && cfg.StorageBackend.Type == "github" {
-		githubItems, err = github.ListProjectItems(
-			cfg.StorageBackend.Owner,
-			cfg.StorageBackend.Repo,
-			cfg.StorageBackend.ProjectNumber,
-		)
-		if err != nil {
-			// Don't fail if GitHub items can't be fetched, just log warning
-			fmt.Fprintf(os.Stderr, "Warning: failed to fetch GitHub project items: %v\n", err)
-		}
-	}
-
-	// Create a map of worktree names for quick lookup
-	worktreeMap := make(map[string]git.Worktree)
-	for _, wt := range worktrees {
-		name := git.GetWorktreeName(wt.Path)
-		worktreeMap[name] = wt
-	}
-
-	// Track which GitHub items have been matched to worktrees
-	matchedGithubItems := make(map[string]bool)
-
-	// Create list items for worktrees
-	items := make([]list.Item, 0, len(worktrees)+len(githubItems))
+	// Create initial list items for worktrees (without GitHub data)
+	items := make([]list.Item, 0, len(worktrees))
 	currentWorktreeIndex := -1
 
 	for _, wt := range worktrees {
@@ -174,78 +153,22 @@ func Run(cfg *config.Config) (*Result, error) {
 			currentWorktreeIndex = len(items)
 		}
 
-		// Try to match with GitHub item
-		var matchedItem *github.ProjectItem
-		for i := range githubItems {
-			item := &githubItems[i]
-			// Match by worktree name or issue number
-			itemName := generateWorktreeName(cfg.Name, item.Title)
-			if itemName == name || (item.Content.Number > 0 && fmt.Sprintf("issue-%d", item.Content.Number) == name) {
-				matchedItem = item
-				matchedGithubItems[item.ID] = true
-
-				// Update the todo with GitHub data if it exists
-				if todo != nil {
-					// Get the body from the content if available
-					if item.Content.Body != "" {
-						todo.GitHubBody = item.Content.Body
-					} else if item.Body != "" {
-						todo.GitHubBody = item.Body
-					}
-					if item.Content.URL != "" {
-						todo.GitHubURL = item.Content.URL
-					}
-					// Save the updated config
-					cfg.Save()
-				}
-
-				// If this item has a worktree but isn't in "In Progress" or "Done", move it to "In Progress"
-				if cfg.StorageBackend != nil && cfg.StorageBackend.Type == "github" {
-					if item.Status != "In Progress" && item.Status != "Done" {
-						err := github.UpdateProjectItemStatus(
-							cfg.StorageBackend.Owner,
-							cfg.StorageBackend.Repo,
-							cfg.StorageBackend.ProjectNumber,
-							item.ID,
-							"In Progress",
-						)
-						if err != nil {
-							fmt.Fprintf(os.Stderr, "Warning: failed to update item status to In Progress: %v\n", err)
-						} else {
-							// Update the local copy
-							item.Status = "In Progress"
-						}
-					}
-				}
-
-				break
-			}
-		}
-
 		items = append(items, worktreeItem{
 			worktree:    wt,
 			todo:        todo,
-			githubItem:  matchedItem,
+			githubItem:  nil,
 			isCheckedOut: true,
 		})
-	}
-
-	// Add GitHub items that don't have worktrees
-	for i := range githubItems {
-		item := &githubItems[i]
-		if !matchedGithubItems[item.ID] {
-			items = append(items, worktreeItem{
-				githubItem:  item,
-				isCheckedOut: false,
-			})
-		}
 	}
 
 	// Create list
 	delegate := list.NewDefaultDelegate()
 	delegate.ShowDescription = true
-	l := list.New(items, delegate, 0, 0)
-	l.Title = "Git Worktrees"
+	l := list.New(items, delegate, 80, 20) // Initial size, will be updated by WindowSizeMsg
+	l.Title = "" // No title - we show it in our custom header
+	l.SetShowTitle(false)
+	l.SetShowStatusBar(true)
+	l.SetFilteringEnabled(true)
 	l.AdditionalShortHelpKeys = func() []key.Binding {
 		return []key.Binding{
 			key.NewBinding(
@@ -274,11 +197,18 @@ func Run(cfg *config.Config) (*Result, error) {
 	ti.CharLimit = 100
 	ti.Width = 50
 
+	// Create spinner
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+
 	m := &model{
 		config:    cfg,
 		worktrees: worktrees,
 		list:      l,
 		textInput: ti,
+		spinner:   s,
+		loading:   cfg.StorageBackend != nil && cfg.StorageBackend.Type == "github",
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -296,11 +226,48 @@ func Run(cfg *config.Config) (*Result, error) {
 }
 
 func (m *model) Init() tea.Cmd {
+	// Start spinner and fetch GitHub data if configured
+	if m.config.StorageBackend != nil && m.config.StorageBackend.Type == "github" {
+		return tea.Batch(m.spinner.Tick, m.fetchGithubItems)
+	}
 	return nil
+}
+
+type githubItemsMsg struct {
+	items []github.ProjectItem
+	err   error
+}
+
+func (m *model) fetchGithubItems() tea.Msg {
+	if m.config.StorageBackend == nil || m.config.StorageBackend.Type != "github" {
+		return githubItemsMsg{items: nil, err: nil}
+	}
+
+	items, err := github.ListProjectItems(
+		m.config.StorageBackend.Owner,
+		m.config.StorageBackend.Repo,
+		m.config.StorageBackend.ProjectNumber,
+	)
+	return githubItemsMsg{items: items, err: err}
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
+	case githubItemsMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.err = fmt.Errorf("failed to fetch GitHub items: %w", msg.err)
+		} else if msg.items != nil {
+			// Merge GitHub items with existing worktree items
+			m.mergeGithubItems(msg.items)
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		// Handle text input mode
 		if m.creating {
@@ -374,69 +341,34 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "r":
+			// Show spinner if GitHub is configured
+			if m.config.StorageBackend != nil && m.config.StorageBackend.Type == "github" {
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.refreshAll)
+			}
 			return m, m.refreshWorktrees
 		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.list.SetSize(msg.Width, msg.Height-4)
+		// Account for header (2 lines) + potential error line (1 line)
+		m.list.SetSize(msg.Width, msg.Height-3)
 
 	case refreshMsg:
 		m.worktrees = msg.worktrees
-
-		// Get GitHub items if configured
-		var githubItems []github.ProjectItem
-		if m.config.StorageBackend != nil && m.config.StorageBackend.Type == "github" {
-			var err error
-			githubItems, err = github.ListProjectItems(
-				m.config.StorageBackend.Owner,
-				m.config.StorageBackend.Repo,
-				m.config.StorageBackend.ProjectNumber,
-			)
-			if err != nil {
-				m.err = fmt.Errorf("failed to fetch GitHub items: %w", err)
-			}
-		}
-
-		// Match worktrees with GitHub items
-		matchedGithubItems := make(map[string]bool)
-		items := make([]list.Item, 0, len(m.worktrees)+len(githubItems))
-
+		// Just update worktrees list with current items (no GitHub fetch)
+		items := make([]list.Item, 0, len(m.worktrees))
 		for _, wt := range m.worktrees {
 			name := git.GetWorktreeName(wt.Path)
 			todo := m.config.GetTodoForWorktree(name)
-
-			var matchedItem *github.ProjectItem
-			for i := range githubItems {
-				item := &githubItems[i]
-				itemName := generateWorktreeName(m.config.Name, item.Title)
-				if itemName == name || (item.Content.Number > 0 && fmt.Sprintf("issue-%d", item.Content.Number) == name) {
-					matchedItem = item
-					matchedGithubItems[item.ID] = true
-					break
-				}
-			}
-
 			items = append(items, worktreeItem{
 				worktree:    wt,
 				todo:        todo,
-				githubItem:  matchedItem,
+				githubItem:  nil,
 				isCheckedOut: true,
 			})
 		}
-
-		// Add unmatched GitHub items
-		for i := range githubItems {
-			item := &githubItems[i]
-			if !matchedGithubItems[item.ID] {
-				items = append(items, worktreeItem{
-					githubItem:  item,
-					isCheckedOut: false,
-				})
-			}
-		}
-
 		m.list.SetItems(items)
 		return m, nil
 
@@ -464,13 +396,120 @@ func (m *model) View() string {
 		return m.viewDeleteConfirm()
 	}
 
-	s := m.list.View()
+	// Build the view with header
+	var view strings.Builder
 
-	if m.err != nil {
-		s += "\n\n" + errorStyle.Render(fmt.Sprintf("Error: %v", m.err))
+	// Show header
+	header := titleStyle.Render("LFG - Git Worktrees")
+	view.WriteString(header)
+	view.WriteString("\n")
+
+	// Show loading spinner on same line as header if fetching GitHub data
+	if m.loading {
+		view.WriteString(m.spinner.View())
+		view.WriteString(" Fetching GitHub project items...")
 	}
 
-	return s
+	view.WriteString("\n")
+
+	// Show list
+	view.WriteString(m.list.View())
+
+	// Show error if present
+	if m.err != nil {
+		view.WriteString("\n")
+		view.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))
+	}
+
+	return view.String()
+}
+
+func (m *model) mergeGithubItems(githubItems []github.ProjectItem) {
+	// Create a map of worktree names for quick lookup
+	worktreeMap := make(map[string]git.Worktree)
+	for _, wt := range m.worktrees {
+		name := git.GetWorktreeName(wt.Path)
+		worktreeMap[name] = wt
+	}
+
+	// Track which GitHub items have been matched to worktrees
+	matchedGithubItems := make(map[string]bool)
+
+	// Create list items
+	items := make([]list.Item, 0, len(m.worktrees)+len(githubItems))
+
+	for _, wt := range m.worktrees {
+		name := git.GetWorktreeName(wt.Path)
+		todo := m.config.GetTodoForWorktree(name)
+
+		// Try to match with GitHub item
+		var matchedItem *github.ProjectItem
+		for i := range githubItems {
+			item := &githubItems[i]
+			// Match by worktree name or issue number
+			itemName := generateWorktreeName(m.config.Name, item.Title)
+			if itemName == name || (item.Content.Number > 0 && fmt.Sprintf("issue-%d", item.Content.Number) == name) {
+				matchedItem = item
+				matchedGithubItems[item.ID] = true
+
+				// Update the todo with GitHub data if it exists
+				if todo != nil {
+					// Get the body from the content if available
+					if item.Content.Body != "" {
+						todo.GitHubBody = item.Content.Body
+					} else if item.Body != "" {
+						todo.GitHubBody = item.Body
+					}
+					if item.Content.URL != "" {
+						todo.GitHubURL = item.Content.URL
+					}
+					// Save the updated config
+					m.config.Save()
+				}
+
+				// If this item has a worktree but isn't in "In Progress" or "Done", move it to "In Progress"
+				if m.config.StorageBackend != nil && m.config.StorageBackend.Type == "github" {
+					if item.Status != "In Progress" && item.Status != "Done" {
+						err := github.UpdateProjectItemStatus(
+							m.config.StorageBackend.Owner,
+							m.config.StorageBackend.Repo,
+							m.config.StorageBackend.ProjectNumber,
+							item.ID,
+							"In Progress",
+						)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "Warning: failed to update item status to In Progress: %v\n", err)
+						} else {
+							// Update the local copy
+							item.Status = "In Progress"
+						}
+					}
+				}
+
+				break
+			}
+		}
+
+		items = append(items, worktreeItem{
+			worktree:    wt,
+			todo:        todo,
+			githubItem:  matchedItem,
+			isCheckedOut: true,
+		})
+	}
+
+	// Add GitHub items that don't have worktrees
+	for i := range githubItems {
+		item := &githubItems[i]
+		if !matchedGithubItems[item.ID] {
+			items = append(items, worktreeItem{
+				githubItem:  item,
+				isCheckedOut: false,
+			})
+		}
+	}
+
+	m.list.SetItems(items)
 }
 
 func (m *model) viewCreateWorktree() string {
@@ -522,32 +561,6 @@ func (m *model) handleCreateWorktree() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Create GitHub Project item if configured
-	if m.config.StorageBackend != nil && m.config.StorageBackend.Type == "github" {
-		item, err := github.CreateProjectItem(
-			m.config.StorageBackend.Owner,
-			m.config.StorageBackend.Repo,
-			m.config.StorageBackend.ProjectNumber,
-			description,
-		)
-		if err != nil {
-			// Don't fail, just warn
-			fmt.Fprintf(os.Stderr, "Warning: failed to create GitHub project item: %v\n", err)
-		} else {
-			// Move to In Progress since we're creating a worktree
-			err = github.UpdateProjectItemStatus(
-				m.config.StorageBackend.Owner,
-				m.config.StorageBackend.Repo,
-				m.config.StorageBackend.ProjectNumber,
-				item.ID,
-				"In Progress",
-			)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to update item status: %v\n", err)
-			}
-		}
-	}
-
 	// Add todo with the original description
 	m.config.AddTodo(description, worktreeName)
 	if err := m.config.Save(); err != nil {
@@ -556,7 +569,53 @@ func (m *model) handleCreateWorktree() (tea.Model, tea.Cmd) {
 
 	m.creating = false
 	m.textInput.SetValue("")
+
+	// If GitHub is configured, show spinner and create item + refresh in background
+	if m.config.StorageBackend != nil && m.config.StorageBackend.Type == "github" {
+		m.loading = true
+		return m, tea.Batch(
+			m.spinner.Tick,
+			m.createGithubItemAndRefresh(description, worktreeName),
+		)
+	}
+
+	// Otherwise just refresh
 	return m, m.refreshWorktrees
+}
+
+type createItemMsg struct {
+	err error
+}
+
+func (m *model) createGithubItemAndRefresh(description, worktreeName string) tea.Cmd {
+	return func() tea.Msg {
+		// Create GitHub Project item
+		item, err := github.CreateProjectItem(
+			m.config.StorageBackend.Owner,
+			m.config.StorageBackend.Repo,
+			m.config.StorageBackend.ProjectNumber,
+			description,
+		)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to create GitHub project item: %v\n", err)
+			return createItemMsg{err: err}
+		}
+
+		// Move to In Progress since we're creating a worktree
+		err = github.UpdateProjectItemStatus(
+			m.config.StorageBackend.Owner,
+			m.config.StorageBackend.Repo,
+			m.config.StorageBackend.ProjectNumber,
+			item.ID,
+			"In Progress",
+		)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to update item status: %v\n", err)
+		}
+
+		// Refresh to get all items
+		return m.fetchGithubItems()
+	}
 }
 
 // generateWorktreeName creates a worktree name from project name and feature description
@@ -730,4 +789,16 @@ func (m *model) refreshWorktrees() tea.Msg {
 		return errMsg{err: err}
 	}
 	return refreshMsg{worktrees: worktrees}
+}
+
+func (m *model) refreshAll() tea.Msg {
+	// First refresh worktrees
+	worktrees, err := git.ListWorktrees()
+	if err != nil {
+		return errMsg{err: err}
+	}
+	m.worktrees = worktrees
+
+	// Then fetch GitHub items
+	return m.fetchGithubItems()
 }

@@ -1,14 +1,10 @@
 #!/bin/bash
-
-# Build script for lfg
-
-set -e  # Exit on error
+set -e
 
 echo "Building lfg..."
 go build -o lfg
 
-echo "Creating symlink..."
-ln -sf "$(pwd)/lfg" ~/.local/bin/lfg
+echo "Installing to ~/.local/bin/lfg..."
+cp ./lfg /Users/markcipolla/.local/bin/lfg
 
-echo "✅ Build complete! lfg is now available in your PATH"
-echo "Run 'lfg' to start"
+echo "Done! lfg has been built and installed."
