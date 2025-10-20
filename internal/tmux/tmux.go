@@ -124,8 +124,8 @@ func createSession(sessionName, worktreeName, path string, cfg *config.Config) e
 }
 
 func createPaneLayout(sessionName, worktreeName, path string, cfg *config.Config) error {
-	// Use worktree name as the window name
-	target := fmt.Sprintf("%s:%s", sessionName, worktreeName)
+	// Use session and window index (window 0) as target to avoid issues with dots in window names
+	target := fmt.Sprintf("%s:0", sessionName)
 
 	// Get layout (handles backward compatibility with old Windows format)
 	layout := cfg.GetLayout()
@@ -133,44 +133,29 @@ func createPaneLayout(sessionName, worktreeName, path string, cfg *config.Config
 		return fmt.Errorf("no layout defined in config")
 	}
 
-	// Step 1: Create description pane at top (always 5%)
-	// Split the initial pane: top 5% for description, bottom 95% for rest
-	cmd := exec.Command("tmux", "split-window", "-t", target, "-v", "-p", "95", "-c", path)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to create description pane: %w", err)
+	// Step 1: Create agent pane (always 45% of screen)
+	// Split pane 0: top 45% for agent, bottom 55% for user panes
+	paneTarget := fmt.Sprintf("%s.0", target)
+	fmt.Fprintf(os.Stderr, "DEBUG: Creating agent pane - target=%s, paneTarget=%s\n", target, paneTarget)
+	cmd := exec.Command("tmux", "split-window", "-t", paneTarget, "-v", "-p", "55", "-c", path)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create agent pane: %w (output: %s)", err, string(output))
 	}
 
 	// Now we have:
-	// - Pane 0: description (top 5%)
-	// - Pane 1: rest (bottom 95%)
-
-	// Setup description pane
-	descPane := fmt.Sprintf("%s.0", target)
-	if err := setupDescriptionPane(descPane, worktreeName, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to setup description pane: %v\n", err)
-	}
-
-	// Step 2: Create agent pane (always 45% of remaining space)
-	// Split pane 1: top 45% for agent, bottom 55% for user panes
-	cmd = exec.Command("tmux", "split-window", "-t", fmt.Sprintf("%s.1", target), "-v", "-p", "55", "-c", path)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to create agent pane: %w", err)
-	}
-
-	// Now we have:
-	// - Pane 0: description (top 5%)
-	// - Pane 1: agent (45% of remaining 95% = ~43% of screen)
-	// - Pane 2: work area (55% of remaining 95% = ~52% of screen)
+	// - Pane 0: agent (top 45%)
+	// - Pane 1: work area (bottom 55%)
 
 	// Setup agent pane
-	agentPane := fmt.Sprintf("%s.1", target)
+	agentPane := fmt.Sprintf("%s.0", target)
 	if err := setupAgentPane(agentPane, worktreeName, path, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to setup agent pane: %v\n", err)
 	}
 
-	// Step 3: Build work panes in the bottom area according to layout
-	// Start with pane 2 (the user-configured work area)
-	paneIndex := 2
+	// Step 2: Build work panes in the bottom area according to layout
+	// Start with pane 1 (the user-configured work area)
+	paneIndex := 1
 
 	// Parse height percentages from layout
 	heights := make([]int, len(layout))
@@ -212,14 +197,13 @@ func createPaneLayout(sessionName, worktreeName, path string, cfg *config.Config
 	}
 
 	// Now we have all vertical rows created
-	// Pane 0: description
-	// Pane 1: agent
-	// Pane 2: row 0 (first user row)
-	// Pane 3: row 1 (second user row)
+	// Pane 0: agent
+	// Pane 1: row 0 (first user row)
+	// Pane 2: row 1 (second user row)
 	// etc.
 
-	// Step 2: Handle horizontal splits and commands for each row
-	paneIndex = 2 // Reset to first user pane (pane 2, after description and agent)
+	// Step 3: Handle horizontal splits and commands for each row
+	paneIndex = 1 // Reset to first user pane (pane 1, after agent)
 	for rowIdx, row := range layout {
 		if len(row.Panes) > 0 {
 			// Multi-pane row: split horizontally within this row
@@ -266,8 +250,8 @@ func createPaneLayout(sessionName, worktreeName, path string, cfg *config.Config
 		}
 	}
 
-	// Select the agent pane (pane 1)
-	cmd = exec.Command("tmux", "select-pane", "-t", fmt.Sprintf("%s.1", target))
+	// Select the agent pane (pane 0)
+	cmd = exec.Command("tmux", "select-pane", "-t", fmt.Sprintf("%s.0", target))
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to select agent pane: %v\n", err)
 	}
