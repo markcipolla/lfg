@@ -404,10 +404,12 @@ func (m *model) View() string {
 	view.WriteString(header)
 	view.WriteString("\n")
 
-	// Show loading spinner on same line as header if fetching GitHub data
+	// Show loading spinner if fetching GitHub data
 	if m.loading {
+		view.WriteString("\n")
 		view.WriteString(m.spinner.View())
 		view.WriteString(" Fetching GitHub project items...")
+		return view.String()
 	}
 
 	view.WriteString("\n")
